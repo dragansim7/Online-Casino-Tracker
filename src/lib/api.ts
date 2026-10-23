@@ -181,6 +181,43 @@ export async function fetchAdminAdapters() {
   return res.json();
 }
 
+export async function fetchSyncProgress(): Promise<{
+  isRunning: boolean;
+  total: number;
+  processed: number;
+  percent: number;
+  currentDomain: string;
+  successCount: number;
+  errorCount: number;
+  matchedCount: number;
+  droppedCount: number;
+  startedAt: string | null;
+  completedAt: string | null;
+  errors: { domain: string; error: string; time: string }[];
+}> {
+  const res = await fetch('/api/admin/bonuses/sync-progress', { headers: getAuthHeaders() });
+  if (!res.ok) throw new Error('Failed to fetch sync progress');
+  return res.json();
+}
+
+export async function startSyncAllDomains() {
+  const res = await fetch('/api/admin/bonuses/sync-all', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to start full domain sync');
+  return res.json();
+}
+
+export async function cancelSyncProgress() {
+  const res = await fetch('/api/admin/bonuses/sync-cancel', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to cancel sync');
+  return res.json();
+}
+
 export async function triggerAdapterSync(slug: string) {
   const res = await fetch(`/api/admin/adapters/${slug}/sync`, {
     method: 'POST',

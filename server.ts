@@ -329,7 +329,129 @@ app.post('/api/admin/import', requireAdmin, (req, res) => {
   res.json(result);
 });
 
-// Admin Bonus Sync Trigger (Sync Now / Run Batch / Test error resilience)
+// =====================================================================
+// REAL-TIME SYNC PROGRESS TRACKER (Requirement 1 & Requirement 3)
+// =====================================================================
+
+interface SyncProgressState {
+  isRunning: boolean;
+  total: number;
+  processed: number;
+  percent: number;
+  currentDomain: string;
+  successCount: number;
+  errorCount: number;
+  matchedCount: number;
+  droppedCount: number;
+  startedAt: string | null;
+  completedAt: string | null;
+  errors: { domain: string; error: string; time: string }[];
+}
+
+let syncProgress: SyncProgressState = {
+  isRunning: false,
+  total: 0,
+  processed: 0,
+  percent: 0,
+  currentDomain: '',
+  successCount: 0,
+  errorCount: 0,
+  matchedCount: 0,
+  droppedCount: 0,
+  startedAt: null,
+  completedAt: null,
+  errors: [],
+};
+
+let cancelRequested = false;
+
+// GET real-time scraper progress
+app.get('/api/admin/bonuses/sync-progress', requireAdmin, (_req, res) => {
+  res.json(syncProgress);
+});
+
+// POST Cancel running sync
+app.post('/api/admin/bonuses/sync-cancel', requireAdmin, (_req, res) => {
+  cancelRequested = true;
+  syncProgress.isRunning = false;
+  res.json({ success: true, message: 'Sync cancellation requested' });
+});
+
+// POST Start Fetch All Domains with live progress
+app.post('/api/admin/bonuses/sync-all', requireAdmin, async (_req, res) => {
+  if (syncProgress.isRunning) {
+    return res.json({ success: false, message: 'Sync already in progress', progress: syncProgress });
+  }
+
+  const allListings = [...db.getListings()];
+  cancelRequested = false;
+
+  syncProgress = {
+    isRunning: true,
+    total: allListings.length,
+    processed: 0,
+    percent: 0,
+    currentDomain: allListings[0]?.normalised_domain || '',
+    successCount: 0,
+    errorCount: 0,
+    matchedCount: 0,
+    droppedCount: 0,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    errors: [],
+  };
+
+  // Return response immediately so client can poll progress
+  res.json({ success: true, message: `Started fetching all ${allListings.length} domains`, progress: syncProgress });
+
+  // Run processing in asynchronous non-blocking background batches
+  (async () => {
+    const chunkSize = 25;
+    for (let i = 0; i < allListings.length; i += chunkSize) {
+      if (cancelRequested) break;
+
+      const chunk = allListings.slice(i, i + chunkSize);
+      await Promise.all(
+        chunk.map(async (listing) => {
+          if (cancelRequested) return;
+          syncProgress.currentDomain = listing.normalised_domain;
+          try {
+            const updated = await syncEngine.syncListing(listing);
+            if (updated.bonus_status === 'failed' || updated.feed_status === 'error') {
+              syncProgress.errorCount += 1;
+              syncProgress.errors.push({
+                domain: listing.normalised_domain,
+                error: 'Feed connection or parsing failure',
+                time: new Date().toLocaleTimeString(),
+              });
+            } else {
+              syncProgress.successCount += 1;
+              syncProgress.matchedCount += (updated.bonus_count || 0);
+            }
+          } catch (err: any) {
+            syncProgress.errorCount += 1;
+            syncProgress.errors.push({
+              domain: listing.normalised_domain,
+              error: err.message || 'Unknown crawl error',
+              time: new Date().toLocaleTimeString(),
+            });
+          }
+          syncProgress.processed += 1;
+          syncProgress.percent = Math.round((syncProgress.processed / syncProgress.total) * 100);
+        })
+      );
+
+      // Small yield to event loop for server responsiveness
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+
+    syncProgress.isRunning = false;
+    syncProgress.completedAt = new Date().toISOString();
+    syncProgress.percent = Math.round((syncProgress.processed / syncProgress.total) * 100);
+  })();
+});
+
+// Admin Bonus Sync Trigger (Sync Selected Domain / Batch / Error Tests)
 app.post('/api/admin/bonuses/sync', requireAdmin, async (req, res) => {
   const { listingId, simulateError, simulateNoFeed, simulateNoOffers, batchCount } = req.body;
 
@@ -347,8 +469,8 @@ app.post('/api/admin/bonuses/sync', requireAdmin, async (req, res) => {
     return res.json({ success: true, listing: synced, bonuses });
   }
 
-  // Batch run (round-robin batch up to 20 sites, Section 11e)
-  const count = batchCount || 10;
+  // Batch run (round-robin batch)
+  const count = batchCount || 20;
   const targetListings = db.getListings().slice(0, count);
   const results = [];
 
@@ -360,7 +482,7 @@ app.post('/api/admin/bonuses/sync', requireAdmin, async (req, res) => {
   res.json({ success: true, synced_count: results.length, processed: results });
 });
 
-// Admin Direct Casino Scraper Adapters (Zero LLM, Fast Wallet-API Sync)
+// Admin Direct Casino Scraper Adapters (Fast Wallet-API Sync)
 app.get('/api/admin/adapters', requireAdmin, (_req, res) => {
   const configs = syncEngine.getCasinoConfigs();
   res.json({ adapters: configs });

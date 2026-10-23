@@ -146,9 +146,7 @@ export class BonusSyncEngine {
     const baseUrl = `https://${cleanDomain}`;
 
     // Common merchant IDs found on this white-label network
-    const merchantCandidates = knownMerchantId
-      ? [knownMerchantId]
-      : ['140', '142', '148', '150', '100', '101', '88', '77', ''];
+    const merchantCandidates = knownMerchantId ? [knownMerchantId] : ['140', ''];
 
     for (const mId of merchantCandidates) {
       try {
@@ -161,7 +159,7 @@ export class BonusSyncEngine {
         });
 
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
+        const timeoutId = setTimeout(() => controller.abort(), 1200);
 
         const r = await fetch(`${baseUrl}/api/v1/index.php`, {
           method: 'POST',
@@ -188,7 +186,8 @@ export class BonusSyncEngine {
           }
         }
       } catch {
-        // Continue to next probe candidate or fallback
+        // If domain host connection failed or timed out, further candidate attempts on the same host will also fail
+        break;
       }
     }
 

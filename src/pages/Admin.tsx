@@ -35,11 +35,14 @@ import {
   updateAdminToggles,
   bulkImportDomains,
   triggerBonusSync,
-  fetchAdminUnmatched,
-  moveUnmatchedToCategory,
   fetchAdminSyncRuns,
   fetchAdminAdapters,
   triggerAdapterSync,
+  fetchSyncProgress,
+  startSyncAllDomains,
+  cancelSyncProgress,
+  fetchAdminUnmatched,
+  moveUnmatchedToCategory,
 } from '../lib/api.ts';
 import {
   BonusCategorySlug,
@@ -83,6 +86,21 @@ export const Admin: React.FC = () => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatusMsg, setSyncStatusMsg] = useState('');
   const [syncRuns, setSyncRuns] = useState<SyncRun[]>([]);
+  const [syncProgress, setSyncProgress] = useState<{
+    isRunning: boolean;
+    total: number;
+    processed: number;
+    percent: number;
+    currentDomain: string;
+    successCount: number;
+    errorCount: number;
+    matchedCount: number;
+    droppedCount: number;
+    startedAt: string | null;
+    completedAt: string | null;
+    errors: { domain: string; error: string; time: string }[];
+  } | null>(null);
+  const [showErrorLog, setShowErrorLog] = useState(true);
 
   // Unmatched State
   const [unmatchedData, setUnmatchedData] = useState<{
@@ -104,14 +122,59 @@ export const Admin: React.FC = () => {
     } else if (activeTab === 'bonuses') {
       fetchAdminSyncRuns().then((res) => setSyncRuns(res.items)).catch(console.error);
       fetchAdminAdapters().then((res) => setAdapters(res.adapters || [])).catch(console.error);
+      fetchSyncProgress().then(setSyncProgress).catch(console.error);
     } else if (activeTab === 'unmatched') {
       fetchAdminUnmatched().then(setUnmatchedData).catch(console.error);
     }
   }, [isAdmin, activeTab, listingFilter]);
 
+  // Polling loop for real-time scraper progress
+  useEffect(() => {
+    let timer: NodeJS.Timeout | null = null;
+    if (activeTab === 'bonuses' && syncProgress?.isRunning) {
+      timer = setTimeout(async () => {
+        try {
+          const prog = await fetchSyncProgress();
+          setSyncProgress(prog);
+          if (!prog.isRunning) {
+            setIsSyncing(false);
+            fetchAdminSyncRuns().then((r) => setSyncRuns(r.items)).catch(console.error);
+            fetchAdminOverview().then(setOverview).catch(console.error);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }, 750);
+    }
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeTab, syncProgress?.isRunning, syncProgress?.processed]);
+
+  const handleStartSyncAll = async () => {
+    setIsSyncing(true);
+    setSyncStatusMsg('Starting crawl across all cataloged domains (0 LLM credits)...');
+    try {
+      const res = await startSyncAllDomains();
+      setSyncProgress(res.progress);
+    } catch (err: any) {
+      setSyncStatusMsg(`Failed to start full sync: ${err.message}`);
+      setIsSyncing(false);
+    }
+  };
+
+  const handleCancelSync = async () => {
+    try {
+      await cancelSyncProgress();
+      setSyncStatusMsg('Cancel requested...');
+    } catch (err: any) {
+      setSyncStatusMsg(`Cancel failed: ${err.message}`);
+    }
+  };
+
   const handleRunAdapterSync = async (slug: string) => {
     setIsSyncing(true);
-    setSyncStatusMsg(`Directly scraping ${slug} via wallet-api (0 LLM tokens)...`);
+    setSyncStatusMsg(`Directly scraping target domain via fast wallet-api (0 LLM tokens)...`);
     try {
       const res = await triggerAdapterSync(slug);
       setAdapterResult(res);
@@ -895,61 +958,77 @@ export const Admin: React.FC = () => {
          ===================================================================== */}
       {activeTab === 'bonuses' && (
         <div className="space-y-6">
-          {/* Direct Wallet-API Adapter Card (Zero LLM Credits) */}
+          {/* Universal Platform Scrapers Card */}
           <div className="p-5 rounded-md border border-[#FFB020]/40 bg-[#15151A] space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[11px] font-semibold bg-[#FFB020]/15 text-[#FFC24D] border border-[#FFB020]/30 mb-1">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[11px] font-semibold bg-[#FFB020]/15 text-[#FFC24D] border border-[#FFB020]/30">
                   <span>Zero LLM Tokens</span>
                   <span>·</span>
                   <span>Direct JSON Endpoint</span>
+                  <span>·</span>
+                  <span>Deterministic Classifier</span>
                 </div>
                 <h2 className="text-base font-bold text-zinc-100 flex items-center gap-2">
-                  Universal Direct Platform Scrapers (All 900+ Domains Enabled)
+                  Universal Direct Platform Scrapers (All Cataloged Websites)
                 </h2>
-                <p className="text-xs text-zinc-400 mt-1 max-w-2xl">
-                  Every domain in AXHub—current and newly imported—automatically runs this auto-detection probe (<code className="font-mono text-zinc-300">POST /api/v1/index.php</code>). If the casino runs on the same white-label backend as Yeah96, it instantly retrieves the promotions, parses Quill delta terms, categorizes into the 5 AXHub buckets, and puts VIP/Cashback into the Unmatched queue without waiting 6 hours or burning LLM credits.
+                <p className="text-xs text-zinc-400 max-w-2xl leading-relaxed">
+                  Every domain in AXHub automatically queries the high-speed backend endpoint (<code className="font-mono text-zinc-300">POST /api/v1/index.php</code>). It immediately extracts bonus amounts, wagering requirements, and unlocks, classifying them into the 5 standard categories with zero LLM credits spent.
                 </p>
               </div>
 
-              <div className="flex flex-wrap sm:flex-col gap-2 shrink-0">
+              {/* Standardized Action Buttons */}
+              <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  disabled={isSyncing}
-                  onClick={() => handleRunAdapterSync('yeah96')}
-                  className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md bg-[#FFB020] text-zinc-950 font-bold text-xs hover:bg-[#FFC24D] transition-colors disabled:opacity-50 shadow-sm"
+                  disabled={isSyncing || syncProgress?.isRunning}
+                  onClick={handleStartSyncAll}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-md bg-[#FFB020] text-zinc-950 font-bold text-xs hover:bg-[#FFC24D] transition-all disabled:opacity-50 shadow-sm"
                 >
-                  <span>⚡ Sync Yeah96</span>
+                  <RefreshCw className={`w-3.5 h-3.5 ${syncProgress?.isRunning ? 'animate-spin' : ''}`} />
+                  <span>{syncProgress?.isRunning ? 'Crawling All Domains...' : 'Fetch All Domains'}</span>
                 </button>
+
                 <button
                   type="button"
-                  disabled={isSyncing}
+                  disabled={isSyncing || syncProgress?.isRunning}
                   onClick={async () => {
                     setIsSyncing(true);
-                    setSyncStatusMsg('Running universal auto-detection across batch of 20 domains...');
+                    setSyncStatusMsg('Running batch scraper across 20 domains...');
                     try {
                       const res = await triggerBonusSync({ batchCount: 20 });
                       setSyncStatusMsg(`Successfully crawled and updated ${res.synced_count} domains via universal auto-detection! Zero LLM credits spent.`);
                       fetchAdminSyncRuns().then((r) => setSyncRuns(r.items));
+                      fetchAdminOverview().then(setOverview).catch(console.error);
                     } catch (err: any) {
                       setSyncStatusMsg(`Batch sync error: ${err.message}`);
                     } finally {
                       setIsSyncing(false);
                     }
                   }}
-                  className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md border border-[#FFB020]/40 bg-[#111114] text-[#FFC24D] font-bold text-xs hover:bg-[#FFB020]/15 transition-colors disabled:opacity-50"
+                  className="inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-md border border-[#FFB020]/40 bg-[#111114] text-[#FFC24D] font-bold text-xs hover:bg-[#FFB020]/15 transition-colors disabled:opacity-50"
                 >
-                  <span>⚡ Run Batch Sync (20 Domains)</span>
+                  <Play className="w-3.5 h-3.5 text-[#FFB020]" />
+                  <span>Fetch Batch (20 Domains)</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isSyncing || syncProgress?.isRunning}
+                  onClick={() => handleRunAdapterSync('yeah96')}
+                  className="inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-md border border-[#26262E] bg-[#111114] text-zinc-300 font-semibold text-xs hover:border-[#FFB020] hover:text-zinc-100 transition-colors disabled:opacity-50"
+                >
+                  <span>Sync Target Domain</span>
                 </button>
               </div>
             </div>
 
-            {/* Configured Adapters Strip */}
+            {/* Probe Status Indicator */}
             <div className="pt-3 border-t border-[#26262E] flex flex-wrap items-center gap-3 text-xs">
               <span className="text-zinc-500 font-medium">Auto-Detection Probe Status:</span>
               <div className="px-2.5 py-1 rounded bg-[#111114] border border-emerald-800/40 font-mono text-[11px] text-emerald-300 flex items-center gap-2">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                <span>Active on All 900+ Listings + New Imports</span>
+                <span>Active on All 900+ Listings & New Imports</span>
               </div>
             </div>
 
@@ -968,13 +1047,155 @@ export const Admin: React.FC = () => {
             )}
           </div>
 
+          {/* =================================================================
+              REAL-TIME SCRAPER PROGRESS BAR (Requirement 1 & 3)
+             ================================================================= */}
+          <div className="p-5 rounded-md border border-[#26262E] bg-[#111114] space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <RefreshCw className={`w-4 h-4 text-[#FFB020] ${syncProgress?.isRunning ? 'animate-spin' : ''}`} />
+                <h3 className="text-sm font-bold text-zinc-100">
+                  Scraper Execution Monitor
+                </h3>
+                {syncProgress?.isRunning ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                    Processing In Real-Time
+                  </span>
+                ) : syncProgress?.completedAt ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                    <CheckCircle className="w-3 h-3 text-emerald-400" />
+                    Completed
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-zinc-800 text-zinc-400">
+                    Idle
+                  </span>
+                )}
+              </div>
+
+              {syncProgress?.isRunning && (
+                <button
+                  type="button"
+                  onClick={handleCancelSync}
+                  className="px-3 py-1 text-xs rounded border border-rose-800/60 bg-rose-950/30 text-rose-300 hover:bg-rose-900/40 transition-colors"
+                >
+                  Cancel Run
+                </button>
+              )}
+            </div>
+
+            {/* Numeric Counter & Percent */}
+            <div className="flex items-baseline justify-between pt-1">
+              <div>
+                <span className="text-2xl font-black font-mono text-[#FFB020]">
+                  {syncProgress ? syncProgress.processed : 0}
+                </span>
+                <span className="text-zinc-500 text-xs font-mono ml-1.5">
+                  / {syncProgress ? syncProgress.total : listingsData.total || 915} websites processed
+                </span>
+              </div>
+              <div className="text-lg font-bold font-mono text-zinc-200">
+                {syncProgress ? syncProgress.percent : 0}%
+              </div>
+            </div>
+
+            {/* Visual Progress Bar */}
+            <div className="relative w-full h-3 rounded-full bg-[#18181D] border border-[#26262E] overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-300 ease-out bg-gradient-to-r from-[#FFB020] via-amber-400 to-[#FFE082] ${
+                  syncProgress?.isRunning ? 'animate-pulse' : ''
+                }`}
+                style={{ width: `${syncProgress ? syncProgress.percent : 0}%` }}
+              />
+            </div>
+
+            {/* Progress Metrics Strip */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2 text-xs">
+              <div className="p-2.5 rounded border border-[#26262E] bg-[#15151A]">
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Current Target</div>
+                <div className="font-mono text-zinc-200 font-semibold truncate mt-0.5">
+                  {syncProgress?.isRunning ? syncProgress.currentDomain : syncProgress?.completedAt ? 'All Done' : 'Standby'}
+                </div>
+              </div>
+
+              <div className="p-2.5 rounded border border-[#26262E] bg-[#15151A]">
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Successful Syncs</div>
+                <div className="font-mono text-emerald-400 font-bold text-sm mt-0.5">
+                  {syncProgress ? syncProgress.successCount : 0}
+                </div>
+              </div>
+
+              <div className="p-2.5 rounded border border-[#26262E] bg-[#15151A]">
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Errors / Blocked</div>
+                <div className={`font-mono text-sm mt-0.5 font-bold ${syncProgress && syncProgress.errorCount > 0 ? 'text-rose-400' : 'text-zinc-400'}`}>
+                  {syncProgress ? syncProgress.errorCount : 0}
+                </div>
+              </div>
+
+              <div className="p-2.5 rounded border border-[#26262E] bg-[#15151A]">
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Matched Bonuses</div>
+                <div className="font-mono text-[#FFC24D] font-bold text-sm mt-0.5">
+                  {syncProgress ? syncProgress.matchedCount : 0}
+                </div>
+              </div>
+            </div>
+
+            {/* Error Audit Inspector (Requirement 3) */}
+            {syncProgress && syncProgress.errors.length > 0 && (
+              <div className="mt-4 p-3.5 rounded border border-rose-900/40 bg-rose-950/10 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-rose-300 text-xs font-bold">
+                    <AlertCircle className="w-4 h-4 text-rose-400" />
+                    <span>Encountered Errors ({syncProgress.errors.length})</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowErrorLog(!showErrorLog)}
+                    className="text-[11px] text-zinc-400 hover:text-zinc-200 underline"
+                  >
+                    {showErrorLog ? 'Hide Error Log' : 'Show Error Log'}
+                  </button>
+                </div>
+
+                <p className="text-[11px] text-zinc-400">
+                  Resilience Rule: Transient network failures and offline operators were recorded safely without clearing or corrupting existing bonuses.
+                </p>
+
+                {showErrorLog && (
+                  <div className="max-h-48 overflow-y-auto rounded border border-[#26262E] bg-[#111114]">
+                    <table className="w-full text-left text-[11px] font-mono">
+                      <thead className="bg-[#15151A] text-zinc-400 text-[10px] uppercase border-b border-[#26262E]">
+                        <tr>
+                          <th className="p-2">Time</th>
+                          <th className="p-2">Domain</th>
+                          <th className="p-2">Failure Details</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#26262E] text-zinc-300">
+                        {syncProgress.errors.map((err, idx) => (
+                          <tr key={idx} className="hover:bg-rose-950/20">
+                            <td className="p-2 text-zinc-500">{err.time}</td>
+                            <td className="p-2 text-zinc-200 font-semibold">{err.domain}</td>
+                            <td className="p-2 text-rose-400">{err.error}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Single Domain Sync & Diagnostic Testing */}
           <div className="p-5 rounded-md border border-[#26262E] bg-[#111114] space-y-4">
             <h2 className="text-base font-bold text-zinc-100 flex items-center gap-2">
               <Play className="w-4 h-4 text-[#FFB020]" />
-              Crawler Sync Trigger & Acceptance Testing
+              Single Domain Sync & Diagnostic Testing
             </h2>
             <p className="text-xs text-zinc-400">
-              Discovers feed URLs, applies headless modal scraping abstraction, runs structured extraction, and recomputes denormalised metrics.
+              Run an individual sync on a selected domain or simulate error conditions to test catalog durability.
             </p>
 
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
@@ -983,8 +1204,8 @@ export const Admin: React.FC = () => {
                 onChange={(e) => setSelectedListingForSync(e.target.value)}
                 className="px-3 py-2 rounded border border-[#26262E] bg-[#15151A] text-zinc-200 text-xs flex-1"
               >
-                <option value="">Run on Spotlight: Yes77 AU (yes77au.com)</option>
-                <option value="lst_yeah96">Yeah96 (yeah96.com) [Direct Wallet-API]</option>
+                <option value="">Spotlight Domain: Yes77 AU (yes77au.com)</option>
+                <option value="lst_yeah96">Yeah96 (yeah96.com) [Target Wallet-API]</option>
                 {listingsData.items.map((l) => (
                   <option key={l.id} value={l.id}>
                     {l.name} ({l.domain})
@@ -994,33 +1215,33 @@ export const Admin: React.FC = () => {
 
               <button
                 type="button"
-                disabled={isSyncing}
+                disabled={isSyncing || syncProgress?.isRunning}
                 onClick={() => handleTriggerSync({})}
                 className="px-4 py-2 rounded bg-[#FFB020] text-zinc-950 font-bold text-xs hover:bg-[#FFC24D] disabled:opacity-50"
               >
-                {isSyncing ? 'Syncing...' : 'Sync Now'}
+                {isSyncing ? 'Syncing...' : 'Fetch Selected Domain'}
               </button>
             </div>
 
-            {/* Test buttons to verify acceptance tests (Section 14) */}
+            {/* Standardized Acceptance Testing Buttons */}
             <div className="pt-3 border-t border-[#26262E] flex flex-wrap gap-2 text-xs">
               <button
                 type="button"
-                disabled={isSyncing}
+                disabled={isSyncing || syncProgress?.isRunning}
                 onClick={() => handleTriggerSync({ simulateError: true })}
                 className="px-3 py-1.5 rounded border border-rose-800/60 bg-rose-950/20 text-rose-300 font-medium hover:bg-rose-900/30"
-                title="Proves that transient crawl errors do not wipe existing bonuses (Section 11d & 14)"
+                title="Proves that transient crawl errors do not wipe existing bonuses"
               >
-                Simulate Fetch Failure (Keeps Data Intact)
+                Test Fetch Failure Resilience
               </button>
               <button
                 type="button"
-                disabled={isSyncing}
+                disabled={isSyncing || syncProgress?.isRunning}
                 onClick={() => handleTriggerSync({ simulateNoOffers: true })}
                 className="px-3 py-1.5 rounded border border-[#26262E] bg-[#15151A] text-zinc-300 font-medium hover:border-zinc-500"
-                title="Proves that 0 bonuses sets bonus_status=no_offers and empty state (Section 14)"
+                title="Proves that 0 bonuses sets bonus_status=no_offers and empty state"
               >
-                Simulate Zero Offers Feed
+                Test Zero-Offers Feed
               </button>
             </div>
 
