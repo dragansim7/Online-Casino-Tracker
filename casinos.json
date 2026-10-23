@@ -1,0 +1,12 @@
+[
+  {
+    "slug": "yeah96",
+    "name": "Yeah96",
+    "domain": "yeah96.com",
+    "adapter": "wallet-api",
+    "baseUrl": "https://yeah96.com",
+    "merchantId": "140",
+    "currency": "AUD",
+    "pinnedBonusIds": ["444984", "444986", "444987", "445573", "812841"]
+  }
+]

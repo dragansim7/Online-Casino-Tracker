@@ -1,0 +1,17 @@
+{
+  "name": "AXHub",
+  "short_name": "AXHub",
+  "description": "Independent directory of casino websites and domains with structured bonus-comparison engine.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0B0B0D",
+  "theme_color": "#0B0B0D",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

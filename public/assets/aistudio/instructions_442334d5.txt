@@ -1,0 +1,320 @@
+Build a full-stack web app called "AXHub": an independent, searchable directory of casino websites
+and domains, with a structured bonus-comparison engine, filter-aware sorting, and a dark, minimal,
+mobile-first UI. Ship it fast, accessible and SEO-minded.
+
+=====================================================================
+1. TECH STACK
+=====================================================================
+- React + Vite + TypeScript, React Router, Tailwind CSS, Lucide React icons.
+- Backend: Base44 entities + backend functions (or Supabase/Postgres + edge functions).
+  Server-side re-validation on every admin mutation.
+- Auth: email/password, `role` on User ('admin' | 'user'). Public browsing requires no account.
+- PWA: manifest.json (name "AXHub", display standalone, theme #0B0B0D).
+
+=====================================================================
+2. DESIGN SYSTEM
+=====================================================================
+Tokens: ink #0B0B0D (bg) · ink-soft #111114 · ink-card #15151A · ink-raised #1C1C22 ·
+line #26262E (borders) · gold #FFB020 (accent) · gold-bright #FFC24D · text tiers zinc-100/400/500.
+Type: Inter. Domains always monospace, 12px, zinc-500.
+Layout: sticky 56px header, max-width 6xl centred container, 16px gutters, mobile-first with a
+hamburger menu.
+Components: rounded-md 1px `line` borders, hover:border-gold/40, gold-filled primary buttons with
+dark text, 11px bordered pill badges. Cards: bordered, p-3.5, flex-col, hover border-gold/40.
+A11y: role="search" on forms, aria-label on every icon button, aria-pressed on favourite hearts,
+focus:ring-gold/40.
+
+=====================================================================
+3. DATA MODEL
+=====================================================================
+Listing: id, name, domain, normalised_domain (unique), destination_url, description, admin_notes,
+is_featured, is_demo, source ('manual'|'import'),
+technical_status ('online'|'offline'|'checking'|'unknown'),
+verification_status ('verified'|'unverified'|'review_required'),
+last_checked_at,
+bonus_status ('unchecked'|'ok'|'no_offers'|'unavailable'|'failed'),
+bonus_checked_at, bonus_count, bonus_summary,
+feed_url (text, nullable), feed_status ('unknown'|'ok'|'no_feed'|'error'), feed_last_checked_at,
+hidden_categories (array of slugs), category_overrides (jsonb: raw promo name -> slug),
+search_text (lowercased name+domain), created_date, updated_date.
+
+Listing — SORTABLE METRIC COLUMNS (denormalised from Bonus; recomputed by syncBonuses AND
+saveListing, so manual admin edits never drift the sorts out of sync with the data):
+- metric_max_bonus_amount numeric  — largest amount_value on the listing
+- metric_max_withdraw     numeric  — largest max_withdraw
+- metric_min_rollover     numeric  — lowest rollover multiplier
+- metric_min_unlock       numeric  — lowest unlock threshold
+- metric_best_value       numeric  — highest (amount_value ÷ rollover); rollover 0 or null counts as 1
+- metric_popularity       int      — popularity_score
+- category_metrics        jsonb    — keyed by the five category slugs, each
+                                     { max_bonus_amount, max_withdraw, min_rollover, min_unlock,
+                                       best_value, count }
+All metric columns are NULL when there is no data. Never coerce to 0.
+
+Bonus: id, listing_id (FK), name, category (five slugs, see Section 4), amount_label,
+amount_value numeric (parsed), rollover, min_unlock, max_withdraw, min_deposit,
+reset_period ('DAILY'|'WEEKLY'|'MONTHLY'), claim_condition ('FREE'|'DEPOSIT'|'CUSTOM'),
+providers_allowed, providers_excluded, game_types, terms_text,
+first_seen, last_seen_at, is_new (bool).
+
+PromoUnmatched: id, listing_id (FK), raw_name, raw_amount, raw_terms, seen_at,
+suggested_category (nullable), resolved (bool).
+
+SyncRun: id, listing_id, started_at, duration_ms, cards_found, cards_parsed, matched_count,
+dropped_count, status ('ok'|'no_feed'|'error'), error_text.
+
+ListingEngagement: id, listing_id, click_count (increment on "Visit site"),
+favourite_count (increment from client on heart toggle).
+popularity_score = (click_count * 2) + (favourite_count * 3) + bonus_count.
+
+ImportBatch: id, admin_email, total_processed, imported_count, duplicate_count, invalid_count,
+failed_count, created_date.
+
+Indexes: normalised_domain unique; technical_status, verification_status, is_featured,
+created_date, every metric_* column; GIN on category_metrics; Bonus on listing_id and category.
+
+=====================================================================
+4. BONUS TAXONOMY — CLOSED SET OF FIVE
+=====================================================================
+ONLY these five categories are ever stored or rendered. Anything that does not cleanly match one is
+dropped from the public record.
+
+slug                  | section heading                      | chip label
+signup_no_deposit     | Signup no deposit bonus              | Signup no deposit
+signup_deposit_match  | Signup deposit match bonus           | Signup deposit match
+referral              | Referral share/invite/deposit bonus  | Referral
+daily                 | Daily free bonus                     | Daily free
+birthday              | Birthday bonus                       | Birthday
+
+Fixed render order, with these sublines:
+  Signup no deposit bonus             — "Free credit or spins for registering, with no deposit needed."
+  Signup deposit match bonus          — "A percentage or cash match on a first deposit."
+  Referral share/invite/deposit bonus — "Paid for inviting, sharing, or a downline's deposit."
+  Daily free bonus                    — "Free credit or a repeatable offer claimed each day."
+  Birthday bonus                      — "A gift credited around a player's birthday."
+Render a section ONLY if the listing has >=1 bonus in it. bonus_count counts matched bonuses only.
+
+4a. CLASSIFIER DECISION TREE — evaluate in order, first match wins
+1. Tied to the player's birthday            -> birthday
+2. Requires inviting / sharing / a downline -> referral
+3. No deposit required AND new-member/first-time framing -> signup_no_deposit
+4. A PERCENTAGE match on a deposit: first deposit only -> signup_deposit_match
+                                    recurring (daily/weekly/monthly) -> daily
+5. Flat free credit or free spins, no deposit, repeating cadence -> daily
+6. Flat free credit unlocked by hitting a deposit threshold, repeating -> daily
+7. Nothing above matched -> DROP (do not store on the public record)
+
+4b. EXPLICIT DROP LIST — never force these into a category
+Rebate / cashback / commission percentages: "Weekly Rebate", "Daily Win Lose Rebate",
+"Weekly Commission", "Slot Unlimited", "Cashback", "Turnover Rebate".
+Loyalty / tier programmes: "VIP Loyalty Program", "VIP Upgrade Bonus", "VIP Club", "Tier Rewards".
+Mini-games and side features: "Golden Egg Bonus", "Plinko Ball Bonus", "Scratch Card",
+"Lucky Number", "Leaderboard".
+Third-party / partner brands: "COSMO PLAY", "COSMOJACK", any named external brand offer.
+Unlimited or uncapped evergreen offers with no stated amount.
+
+4c. NEGATIVE-FIT RULE
+The extraction prompt must carry BOTH the tree AND the drop list as negative examples, and must be
+allowed to return category=null. Do NOT let it pick "closest" — a rebate jammed into "Daily free
+bonus" is exactly the bug being fixed. Confidence < 0.7 -> treat as null -> unmatched queue.
+
+4d. UNMATCHED QUEUE (admin only, never public)
+Dropped promos go to PromoUnmatched. Admin > Bonuses gets an "Unmatched" tab listing them with a
+one-click "Move to <category>" that creates a real Bonus row and remembers the rule for next run.
+Show a running dropped/matched ratio so classifier drift is visible.
+
+4e. PER-LISTING OVERRIDE
+Admin > Listings exposes toggles to hide any of the five per site (hidden_categories), and a manual
+category picker on each bonus (category_overrides). Overrides beat the classifier on every sync.
+
+=====================================================================
+5. FILTERS
+=====================================================================
+Category filter chips on /directory, multi-select, in the Section 4 order, using the Section 4 chip
+labels. A listing matches if it has >=1 bonus in ANY selected category. No chip selected = all.
+Separate second row of non-category filters: verification (all | verified | unverified |
+review_required) and availability (all | offline).
+Show an active-filter summary line with a "Clear filters" action.
+
+=====================================================================
+6. SORTING — CONTEXTUAL TO THE ACTIVE FILTER
+=====================================================================
+Sort options, labelled exactly as written:
+  "Domain name — A → Z"     key domain_az            normalised_domain asc
+  "Domain name — Z → A"     key domain_za            normalised_domain desc
+  "Biggest bonus amount"    key biggest_bonus        metric_max_bonus_amount desc
+  "Highest max withdrawal"  key highest_max_withdraw metric_max_withdraw desc
+  "Lowest cash-out"         key lowest_cashout       metric_min_unlock asc
+  "Lowest turnover/wager"   key lowest_turnover      metric_min_rollover asc
+  "Best turnover"           key best_turnover        metric_best_value desc
+  "Most popular"            key most_popular         metric_popularity desc
+"Lowest cash-out" = lowest min_unlock, i.e. the lowest threshold you must reach before withdrawing.
+"Best turnover" is deliberately NOT the same as "Lowest turnover/wager": the former is a computed
+value score (amount_value ÷ rollover), the latter is the raw multiplier. They must disagree.
+
+6a. RESOLVER — every metric sort reads from a different source depending on scope:
+  scope = GLOBAL  -> read the listing-level metric_* column
+  scope = SCOPED  -> read category_metrics[selectedCategory] for that same metric; with multiple
+                     categories selected use MAX for biggest_bonus / highest_max_withdraw /
+                     best_value and MIN for lowest_cashout / lowest_turnover
+  domain_az, domain_za and most_popular are always global (never scoped).
+
+6b. ON FILTER SELECT — auto-set the sort to that filter's natural default and relabel options:
+  Signup no deposit       -> default "Biggest bonus amount"   -> label "Biggest Signup no deposit bonus amount"
+  Signup deposit match    -> default "Biggest bonus amount"   -> label "Biggest Signup deposit match bonus amount"
+  Referral                -> default "Highest max withdrawal" -> label "Highest Referral max withdrawal"
+  Birthday                -> default "Highest max withdrawal" -> label "Highest Birthday max withdrawal"
+  Daily free              -> default "Lowest turnover/wager"  -> label "Lowest Daily free turnover/wager"
+Label template: replace the bare noun with "{Chip label} {noun}"; "Lowest cash-out" ->
+"Lowest {Chip label} cash-out"; "Best turnover" -> "Best {Chip label} turnover".
+
+6c. RE-EVALUATION RULES
+- Changing or clearing a filter re-checks the active sort: keep it if still valid for the new scope,
+  otherwise fall back to the new scope's default.
+- Clearing all filters restores global scope, global labels and "Domain name — A → Z".
+- A sort option whose values are entirely null in the current scope is DISABLED with a " (no data)"
+  suffix, never hidden.
+- Listings with a null value for the active sort always sort LAST in either direction.
+- Secondary tiebreaker is always normalised_domain asc so paging is stable.
+- Persist filter + sort + page in the URL query (?cat=signup_no_deposit&sort=biggest_bonus&page=2)
+  so filtered views are shareable and back/forward works.
+
+=====================================================================
+7. PUBLIC ROUTES
+=====================================================================
+/ Home — H1 "AXHub", one-line explainer, large search form (submit -> /directory?q=), live counts
+("{n} domains · {n} featured · {n} verified"), disclaimer microcopy, "Featured listings" section
+with empty state "No featured listings yet", "Recently added" 6-card grid, "Browse the full
+directory" button.
+/directory — filter chips, active-filter summary, result count, sort dropdown, 24 cards per page
+with "Load more". Card: truncated name, monospace domain, favourite heart, status pills
+(availability dot + verification + gold "N bonuses" pill with gift icon when bonus_count > 0),
+"Added" and "Availability checked" rows, then Details + "Visit site" (target=_blank,
+rel="noopener noreferrer nofollow", points at destination_url). Empty state names the filter that
+produced zero results and offers "Clear filters".
+/listing/:id — back link, H1 name + domain, status pills, "Open recorded destination" +
+"Similar listings", "Record details" definition list, "Current bonus availability" with
+"Last pulled {date}", "What these statuses mean", bonus disclaimer.
+Static: /about, /contact, /privacy, /terms, /responsible-gambling.
+Auth: /login, /register, /forgot-password, /reset-password.
+
+=====================================================================
+8. BONUS RENDERING
+=====================================================================
+Group bonuses by the five categories in fixed order using the Section 4 headings and sublines.
+Show "{n} recorded" under each heading. Per card show name, then ONLY the fields present:
+amount_label as the headline (absent -> "Amount not published as a figure"),
+rollover -> "Turnover / wager {x}×", min_unlock -> "Minimum to unlock",
+max_withdraw -> "Maximum withdrawal", min_deposit -> "Minimum deposit", reset_period -> "Resets",
+claim_condition -> "Claim condition", providers_allowed -> "Allowed games / providers",
+and terms_text in a collapsed "Operator's terms" block preserving the operator's own line breaks and
+✦ separators VERBATIM. No readable feed -> "This site does not publish a public promotion feed that
+can be read."
+
+=====================================================================
+9. FAVOURITES
+=====================================================================
+Client-side only in localStorage (keys axhub:favourites, axhub:favourites-changed) with a custom
+event so every component stays in sync. Heart toggles with aria-pressed. Favourites tab lists them.
+On toggle, fire a non-blocking increment to ListingEngagement.favourite_count.
+
+=====================================================================
+10. ADMIN AREA
+=====================================================================
+/admin gated on role === 'admin'; otherwise a sign-in-required page stating "Every administrator
+action is also checked on the server, so the directory cannot be changed from the public site."
+Tabs: Overview (counts, recent imports, sync health, feed_error rate, metric coverage, LLM spend),
+Listings (25/page table, filters all|featured|verified|unverified|offline|imported|demo,
+create/edit/delete, toggle featured, show metric_* values inline so sorts can be sanity-checked,
+per-listing category toggles), Bulk import (paste newline list -> preview shows will-import /
+duplicate / invalid -> commit, dedupe on normalised_domain, cap 1000 per import, write an
+ImportBatch row), Bonuses (Sync now / Run batch, last-run summary, feed_url override field, raw-text
+viewer, Unmatched tab), Settings.
+Backend functions: saveListing (create|update), importListings (preview|commit), syncBonuses —
+each re-validates admin role server-side.
+
+=====================================================================
+11. BONUS SYNC ENGINE
+=====================================================================
+11a. FEED DISCOVERY (per listing, cached in feed_url once found)
+Try in order, stop at first success: {domain}/promotion, /promotions, /bonus, /bonuses, /promo,
+then scan the homepage/footer for a link whose text matches /promo|bonus|offer|reward/i.
+Never guess a feed from the domain name. If nothing found, set feed_status='no_feed' and render the
+Section 8 empty-state line.
+
+11b. FETCH — headless browser required
+Use Playwright/Puppeteer server-side, NOT a plain fetch (the promo detail is JS-rendered, and a
+naive HTTP scrape under-collects: offers hidden behind promo modals never appear in the card list).
+- UA string identifying AXHub, viewport 1440x900, block images/fonts to speed up.
+- Respect robots.txt. Timeout 30s per page, 3 retries with exponential backoff.
+- Load the feed page, wait for network idle, then for EACH promo card click it, wait for the detail
+  modal, capture the modal's inner text, close, next card. Cap 40 cards per site.
+- Also capture each card's visible name + amount label as a fallback if its modal fails.
+- Cache by ETag/Last-Modified; skip re-extraction when the page hash is unchanged.
+
+11c. EXTRACTION
+Send each modal's raw text to an LLM with a STRICT JSON schema matching the Bonus entity, carrying
+the Section 4 decision tree AND the Section 4b drop list as negative examples, with category=null
+permitted. Preserve terms_text VERBATIM including line breaks and ✦ separators — never paraphrase.
+Parse amount_value as a float from labels like "AUD 29", "$133.13", "50%", "5%".
+Normalise reset_period to DAILY|WEEKLY|MONTHLY, claim_condition to FREE|DEPOSIT|CUSTOM.
+If a field is absent leave it NULL — never invent it. If the amount is genuinely unstated, set
+amount_label="Amount not published as a figure" and amount_value=NULL.
+Validate output against the schema; on failure retry once, then mark the card failed.
+
+11d. WRITE — idempotent, and NEVER destructive on failure
+- Write ONLY matched bonuses. Append drops to PromoUnmatched with a suggested_category.
+- Replace all Bonus rows for the listing, then recompute metric_* and category_metrics.
+- CRITICAL: if the fetch or extraction fails, do NOT clear existing bonuses. Keep the last good data,
+  set feed_status='error', record the error. A transient 500 must not empty a listing.
+- If the page loads and genuinely has zero matched promos, that IS a result: bonus_status='no_offers',
+  bonus_count=0.
+- Write a SyncRun row per site with matched_count and dropped_count.
+- Diff against the previous run and set is_new / last_seen_at so newly appeared offers can surface.
+- Apply hidden_categories and category_overrides AFTER classification, so overrides win.
+
+11e. SCHEDULING & COST
+Cron every 6h, batch 20 sites per run, round-robin so every listing is covered. Sequential with a
+2s politeness delay. Alert in admin Overview when feed_status='error' exceeds 5% of listings or when
+a site fails 3 runs in a row. Log LLM token spend per run.
+
+=====================================================================
+12. COPY & TONE
+=====================================================================
+Hedge precisely. Repeat in the footer and on listing pages: availability only means the domain
+responded when last checked and is NOT a licence, safety or legality check; a listing is not an
+endorsement; AXHub does not verify gambling licences; "verification" is the internal directory review
+step, not a regulator; bonus terms are as the operator publishes them and can change.
+Footer: "Gambling can be harmful. Only gamble what you can afford to lose."
+Responsible-gambling page covers warning signs, limit tools, support services, legal age and location.
+
+=====================================================================
+13. STATUS SEMANTICS
+=====================================================================
+Never-checked availability -> "No check has been recorded for this domain yet".
+Unreviewed verification -> "This record has not been through the directory review process."
+State that automated availability monitoring is not enabled, so statuses can go stale.
+
+=====================================================================
+14. SEED DATA & ACCEPTANCE
+=====================================================================
+Import ~900 Australian-facing casino domains (yes68.com, yes77au.com, xpay33.com, zebra88.club,
+zeroaud.com, youwin777au.com, and similar) with referral-suffixed destination_urls. Seed one rich
+listing with bonuses across all five categories, with varied amounts, rollovers and withdrawal caps,
+and seed a few deliberately-droppable promos (a rebate, a VIP tier offer, a mini-game) to prove the
+drop list works.
+
+Acceptance checks:
+- Every sort option produces a distinct, correct ordering.
+- "Lowest cash-out", "Lowest turnover/wager" and "Best turnover" return visibly different sequences.
+- Selecting a filter auto-sets and relabels the sort.
+- Null values sort last; the whole flow is reproducible from the URL.
+- A promo on the drop list appears in PromoUnmatched and NOT in the public record.
+- Simulating a fetch failure leaves existing bonuses intact.
+- A listing with zero matched promos renders the empty state, not a broken section.
+
+=====================================================================
+15. DELIVERABLE
+=====================================================================
+The working app plus a short README covering entity setup, the sort resolver, feed discovery, the
+sync function, the classifier rules, and what still needs real data.

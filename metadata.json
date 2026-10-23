@@ -1,0 +1,8 @@
+{
+  "name": "AXHub",
+  "description": "An independent, searchable directory of casino websites and domains, with a structured bonus-comparison engine, filter-aware sorting, and a dark, minimal UI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

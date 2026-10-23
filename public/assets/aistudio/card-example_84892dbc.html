@@ -1,0 +1,11 @@
+<!-- Render output/<slug>.json "featured" on a casino card -->
+<div class="casino-card" data-slug="yeah96"><h3>Yeah96</h3><ul class="bonuses"></ul><small class="updated"></small></div>
+<script>
+fetch('/data/bonuses/yeah96.json').then(r=>r.json()).then(d=>{
+  const ul=document.querySelector('[data-slug="yeah96"] .bonuses');
+  ul.innerHTML=d.featured.map(b=>`<li>${b.image?`<img src="${b.image}" alt="" width="48">`:''}
+   <strong>${b.title}</strong> <span>${b.bonusLabel??''}</span>
+   <small>Min dep ${b.minDeposit??'-'} · ${b.wageringX??'-'}x wagering${b.resets?' · '+b.resets:''}</small></li>`).join('');
+  document.querySelector('[data-slug="yeah96"] .updated').textContent='Updated '+new Date(d.fetchedAt).toLocaleString();
+});
+</script>
