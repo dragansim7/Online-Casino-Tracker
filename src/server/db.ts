@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import fs from 'fs';
+import path from 'path';
 import { BONUS_CATEGORIES, classifyPromo } from '../constants/taxonomy.ts';
 import {
   Bonus,
@@ -15,6 +17,9 @@ import {
   SyncRun,
   User,
 } from '../types/index.ts';
+
+const DATA_DIR = path.resolve(process.cwd(), 'data');
+const STATE_FILE = path.join(DATA_DIR, 'axhub_state.json');
 
 export interface DatabaseState {
   listings: Listing[];
@@ -163,15 +168,53 @@ class Database {
   };
 
   private isInitialized = false;
+  private stateVersion = 1;
 
   constructor() {
     this.init();
   }
 
+  public getStateVersion(): number {
+    return this.stateVersion;
+  }
+
+  public persistState() {
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      fs.writeFileSync(STATE_FILE, JSON.stringify(this.state, null, 2), 'utf-8');
+      this.stateVersion++;
+    } catch (err) {
+      console.error('[DB] Failed to persist state to disk:', err);
+    }
+  }
+
+  private loadPersistedState(): boolean {
+    try {
+      if (fs.existsSync(STATE_FILE)) {
+        const raw = fs.readFileSync(STATE_FILE, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.listings) && parsed.listings.length > 0) {
+          this.state = parsed;
+          console.log(`[DB] Successfully hydrated ${parsed.listings.length} listings from persistent store.`);
+          return true;
+        }
+      }
+    } catch (err) {
+      console.warn('[DB] Could not load persisted state, seeding defaults:', err);
+    }
+    return false;
+  }
+
   private init() {
     if (this.isInitialized) return;
-    this.seedUsers();
-    this.seedDatabase();
+    const loaded = this.loadPersistedState();
+    if (!loaded) {
+      this.seedUsers();
+      this.seedDatabase();
+      this.persistState();
+    }
     this.isInitialized = true;
   }
 
@@ -1168,6 +1211,7 @@ class Database {
       const engagement = this.state.engagements[merged.id];
       const recomputed = recomputeListingMetrics(merged, this.state.bonuses, engagement);
       this.state.listings[existingIndex] = recomputed;
+      this.persistState();
       return recomputed;
     } else {
       // Create
@@ -1218,6 +1262,7 @@ class Database {
 
       const recomputed = recomputeListingMetrics(newListing, this.state.bonuses, engagement);
       this.state.listings.unshift(recomputed);
+      this.persistState();
       return recomputed;
     }
   }
@@ -1229,6 +1274,7 @@ class Database {
     this.state.bonuses = this.state.bonuses.filter((b) => b.listing_id !== id);
     this.state.unmatched = this.state.unmatched.filter((u) => u.listing_id !== id);
     delete this.state.engagements[id];
+    this.persistState();
     return true;
   }
 
@@ -1242,6 +1288,7 @@ class Database {
       delete this.state.engagements[id];
     }
     const deletedCount = initialCount - this.state.listings.length;
+    this.persistState();
     return { deletedCount };
   }
 
@@ -1251,6 +1298,7 @@ class Database {
     this.state.bonuses = [];
     this.state.unmatched = [];
     this.state.engagements = {};
+    this.persistState();
     return { deletedCount };
   }
 
@@ -1325,6 +1373,7 @@ class Database {
 
     const recomputed = recomputeListingMetrics(newListing, this.state.bonuses, engagement);
     this.state.listings.unshift(recomputed);
+    this.persistState();
 
     return { success: true, listing: recomputed };
   }
@@ -1334,6 +1383,7 @@ class Database {
     if (!listing) return null;
     listing.is_featured = !listing.is_featured;
     listing.updated_date = new Date().toISOString();
+    this.persistState();
     return listing;
   }
 
@@ -1358,6 +1408,7 @@ class Database {
     const recomputed = recomputeListingMetrics(listing, this.state.bonuses, engagement);
     const idx = this.state.listings.indexOf(listing);
     this.state.listings[idx] = recomputed;
+    this.persistState();
     return recomputed;
   }
 
@@ -1472,6 +1523,7 @@ class Database {
         created_date: now,
       };
       this.state.importBatches.unshift(importBatch);
+      this.persistState();
     }
 
     return {
@@ -1536,6 +1588,7 @@ class Database {
     const recomputed = recomputeListingMetrics(listing, this.state.bonuses, engagement);
     const lIdx = this.state.listings.indexOf(listing);
     this.state.listings[lIdx] = recomputed;
+    this.persistState();
 
     return { bonus: newBonus, listing: recomputed };
   }
@@ -1566,6 +1619,7 @@ class Database {
     // CRITICAL: if fetch or extraction fails, do NOT clear existing bonuses!
     if (syncRun.status === 'error') {
       listing.bonus_status = 'failed';
+      this.persistState();
       return listing;
     }
 
@@ -1594,6 +1648,7 @@ class Database {
     const recomputed = recomputeListingMetrics(listing, this.state.bonuses, engagement);
     const idx = this.state.listings.indexOf(listing);
     this.state.listings[idx] = recomputed;
+    this.persistState();
 
     return recomputed;
   }

@@ -15,7 +15,7 @@ interface ListingCardProps {
   listing: Listing;
 }
 
-export const ListingCard: React.FC<ListingCardProps> = ({ listing }) => {
+export const ListingCard = React.memo<ListingCardProps>(({ listing }) => {
   const { isFav, toggle } = useFavourites();
   const isSaved = isFav(listing.id);
 
@@ -80,7 +80,7 @@ export const ListingCard: React.FC<ListingCardProps> = ({ listing }) => {
         </div>
 
         {/* Filtered & Sorted Active Bonus Showcase Box */}
-        <div className="rounded-md border border-[#26262E] bg-[#111114] p-3 mb-3.5 space-y-2.5">
+        <div className="rounded-md border border-[#26262E] bg-[#111114] p-3 mb-3.5 space-y-2.5 transition-all duration-200 ease-out">
           {bonus ? (
             <>
               {/* Highlight Headline */}
@@ -177,4 +177,4 @@ export const ListingCard: React.FC<ListingCardProps> = ({ listing }) => {
       </div>
     </div>
   );
-};
+});

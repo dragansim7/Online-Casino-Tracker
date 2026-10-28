@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-\\.]+$');
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email == 'Dragansim7@gmail.com' && request.auth.token.email_verified == true) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Public directory data: anyone can read listings and bonuses; writes require admin
+    match /listings/{listingId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin() && isValidId(listingId);
+    }
+
+    match /bonuses/{bonusId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin() && isValidId(bonusId);
+    }
+
+    match /promos_unmatched/{unmatchedId} {
+      allow read, create, update, delete: if isAdmin() && isValidId(unmatchedId);
+    }
+
+    match /sync_runs/{runId} {
+      allow read, create, update, delete: if isAdmin() && isValidId(runId);
+    }
+
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+  }
+}

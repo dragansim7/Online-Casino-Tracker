@@ -1,0 +1,89 @@
+{
+  "entities": {
+    "Listing": {
+      "title": "Listing",
+      "description": "Affiliate domain listing representing an online casino or sportsbook",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "domain": { "type": "string" },
+        "display_name": { "type": "string" },
+        "affiliate_url": { "type": "string" },
+        "verification_status": { "type": "string" },
+        "technical_status": { "type": "string" },
+        "hidden_categories": { "type": "array" },
+        "category_metrics": { "type": "object" },
+        "search_text": { "type": "string" },
+        "updated_at": { "type": "string" }
+      },
+      "required": ["id", "domain", "display_name", "verification_status"]
+    },
+    "Bonus": {
+      "title": "Bonus",
+      "description": "Promotional bonus offer associated with a domain listing",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "listing_id": { "type": "string" },
+        "category": { "type": "string" },
+        "title": { "type": "string" },
+        "amount_value": { "type": "number" },
+        "percentage": { "type": "number" },
+        "rollover": { "type": "number" },
+        "min_deposit": { "type": "number" },
+        "max_withdraw": { "type": "number" },
+        "promo_code": { "type": "string" },
+        "updated_at": { "type": "string" }
+      },
+      "required": ["id", "listing_id", "category", "title"]
+    },
+    "PromoUnmatched": {
+      "title": "PromoUnmatched",
+      "description": "Unmatched promotional bonus extracted during scraping awaiting review",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "listing_id": { "type": "string" },
+        "raw_title": { "type": "string" },
+        "detected_category": { "type": "string" },
+        "confidence": { "type": "number" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["id", "listing_id", "raw_title"]
+    },
+    "SyncRun": {
+      "title": "SyncRun",
+      "description": "Audit and telemetry record of a manual scraper sync execution",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "status": { "type": "string" },
+        "target_count": { "type": "number" },
+        "success_count": { "type": "number" },
+        "error_count": { "type": "number" },
+        "duration_ms": { "type": "number" },
+        "stage_metrics": { "type": "object" }
+      },
+      "required": ["id", "timestamp", "status"]
+    }
+  },
+  "firestore": {
+    "/listings/{listingId}": {
+      "schema": "Listing",
+      "description": "Collection of domain listings"
+    },
+    "/bonuses/{bonusId}": {
+      "schema": "Bonus",
+      "description": "Collection of bonus promotions"
+    },
+    "/promos_unmatched/{unmatchedId}": {
+      "schema": "PromoUnmatched",
+      "description": "Unmatched promotions pending classification"
+    },
+    "/sync_runs/{runId}": {
+      "schema": "SyncRun",
+      "description": "Audit log of manual crawler executions"
+    }
+  }
+}

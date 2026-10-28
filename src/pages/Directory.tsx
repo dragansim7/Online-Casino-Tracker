@@ -5,12 +5,19 @@
 
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, Loader2, RefreshCw } from 'lucide-react';
-import { fetchListings, DirectoryResponse } from '../lib/api.ts';
-import { BonusCategorySlug, Listing, SortKey } from '../types/index.ts';
+import { Search, RefreshCw, Zap } from 'lucide-react';
+import {
+  fetchListings,
+  getCachedListings,
+  prefetchListings,
+  DirectoryResponse,
+} from '../lib/api.ts';
+import { BonusCategorySlug, SortKey } from '../types/index.ts';
 import { ListingCard } from '../components/ListingCard.tsx';
+import { ListingCardSkeleton } from '../components/ListingCardSkeleton.tsx';
 import { FilterSortBar } from '../components/FilterSortBar.tsx';
 import { CATEGORY_MAP } from '../constants/taxonomy.ts';
+import { getNaturalSortForCategory } from '../lib/sortResolver.ts';
 
 export const Directory: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -28,46 +35,53 @@ export const Directory: React.FC = () => {
     : [];
 
   const [searchInput, setSearchInput] = useState(qParam);
-  const [data, setData] = useState<DirectoryResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
 
-  // Sync search input if URL changes
+  // Initial synchronous check against in-memory query cache
+  const currentParams = {
+    q: qParam,
+    cat: selectedCategories,
+    ver: verParam,
+    avail: availParam,
+    sort: sortParam,
+    page: pageParam,
+    limit: 24,
+  };
+
+  const [data, setData] = useState<DirectoryResponse | null>(() => getCachedListings(currentParams));
+  const [isFetching, setIsFetching] = useState<boolean>(() => !getCachedListings(currentParams));
+
+  // Sync search input if URL changes externally
   useEffect(() => {
     setSearchInput(qParam);
   }, [qParam]);
 
-  // Fetch directory listings on param changes
+  // Fetch directory listings with AbortController for instant network cancellation
   useEffect(() => {
-    let isCancelled = false;
-    setIsLoading(true);
+    const controller = new AbortController();
+    setIsFetching(true);
 
     fetchListings({
-      q: qParam,
-      cat: selectedCategories,
-      ver: verParam,
-      avail: availParam,
-      sort: sortParam,
-      page: pageParam,
-      limit: 24,
+      ...currentParams,
+      signal: controller.signal,
     })
       .then((res) => {
-        if (!isCancelled) {
-          setData(res);
+        setData(res);
+        setIsFetching(false);
+      })
+      .catch((err: any) => {
+        // Ignore aborted requests from rapid user filter clicks
+        if (err?.name !== 'AbortError') {
+          console.error('Failed to fetch listings:', err);
+          setIsFetching(false);
         }
-      })
-      .catch((err) => {
-        console.error('Failed to fetch listings:', err);
-      })
-      .finally(() => {
-        if (!isCancelled) setIsLoading(false);
       });
 
     return () => {
-      isCancelled = true;
+      controller.abort();
     };
   }, [qParam, catParam, verParam, availParam, sortParam, pageParam]);
 
-  // Update URL helper (Section 6c)
+  // Update URL helper
   const updateUrlParams = (updates: Record<string, string | null>) => {
     const next = new URLSearchParams(searchParams);
     for (const [key, val] of Object.entries(updates)) {
@@ -111,7 +125,7 @@ export const Directory: React.FC = () => {
       cat: null,
       ver: null,
       avail: null,
-      sort: 'domain_az', // Clearing restores global scope & domain_az (Section 6c)
+      sort: 'domain_az',
       page: '1',
     });
     setSearchInput('');
@@ -122,7 +136,44 @@ export const Directory: React.FC = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Human-readable summary of active filter for empty state (Section 7)
+  // Prefetch adjacent pagination on hover / focus
+  const handlePrefetchPage = (p: number) => {
+    if (p < 1 || (data && p > data.totalPages)) return;
+    prefetchListings({
+      ...currentParams,
+      page: p,
+    });
+  };
+
+  // Prefetch category on hover
+  const handleHoverCategory = (slug: BonusCategorySlug) => {
+    let next: BonusCategorySlug[];
+    let naturalSort = sortParam;
+    if (selectedCategories.includes(slug)) {
+      next = selectedCategories.filter((c) => c !== slug);
+      if (next.length === 1) {
+        naturalSort = getNaturalSortForCategory(next[0]) || sortParam;
+      } else if (next.length === 0) {
+        naturalSort = 'domain_az';
+      }
+    } else {
+      next = [...selectedCategories, slug];
+      if (next.length === 1) {
+        naturalSort = getNaturalSortForCategory(slug) || sortParam;
+      }
+    }
+    prefetchListings({
+      q: qParam,
+      cat: next,
+      ver: verParam,
+      avail: availParam,
+      sort: naturalSort,
+      page: 1,
+      limit: 24,
+    });
+  };
+
+  // Human-readable summary of active filter for empty state
   const activeFiltersDescription = [
     selectedCategories.length > 0
       ? `categories [${selectedCategories.map((c) => CATEGORY_MAP.get(c)?.chipLabel || c).join(', ')}]`
@@ -170,7 +221,7 @@ export const Directory: React.FC = () => {
         </form>
       </div>
 
-      {/* Filter and Sort Controls (Section 5 & Section 6) */}
+      {/* Filter and Sort Controls */}
       <FilterSortBar
         selectedCategories={selectedCategories}
         verification={verParam}
@@ -183,27 +234,55 @@ export const Directory: React.FC = () => {
         onSelectAvailability={handleAvailabilityChange}
         onSelectSort={handleSortChange}
         onClearFilters={handleClearFilters}
+        onHoverCategory={handleHoverCategory}
       />
 
-      {/* Listing Cards Grid / Loading / Empty States */}
-      {isLoading ? (
-        <div className="py-20 flex flex-col items-center justify-center gap-3 text-zinc-400">
-          <Loader2 className="w-6 h-6 animate-spin text-[#FFB020]" />
-          <span className="text-xs font-mono">Loading matching records...</span>
+      {/* Zero-Flicker Synchronisation Progress Line */}
+      <div className="h-0.5 w-full bg-[#1A1A22] overflow-hidden rounded-full transition-opacity duration-300">
+        {isFetching && (
+          <div className="h-full bg-gradient-to-r from-transparent via-[#FFB020] to-transparent w-full animate-pulse" />
+        )}
+      </div>
+
+      {/* Listing Cards Grid / Skeletons / Empty State */}
+      {!data && isFetching ? (
+        /* Cold Load: Render exact-match skeletons to eliminate Cumulative Layout Shift */
+        <div className="space-y-6">
+          <div className="flex items-center gap-2 text-xs text-zinc-400 font-mono">
+            <Zap className="w-3.5 h-3.5 text-[#FFB020] animate-pulse" />
+            <span>Syncing verified domain bonuses...</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <ListingCardSkeleton key={i} />
+            ))}
+          </div>
         </div>
       ) : data?.items && data.items.length > 0 ? (
+        /* Retain Previous Cards during background revalidation (Zero Flicker) */
         <div className="space-y-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div
+            className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 transition-opacity duration-150 ${
+              isFetching ? 'opacity-80 pointer-events-none' : 'opacity-100'
+            }`}
+          >
             {data.items.map((listing) => (
               <ListingCard key={listing.id} listing={listing} />
             ))}
           </div>
 
-          {/* Pagination Controls (24 per page) */}
+          {/* Pagination Controls */}
           {data.totalPages > 1 && (
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-[#26262E]">
-              <div className="text-xs text-zinc-500 font-mono">
-                Page {data.page} of {data.totalPages} ({data.total} total listings)
+              <div className="text-xs text-zinc-500 font-mono flex items-center gap-2">
+                <span>
+                  Page {data.page} of {data.totalPages} ({data.total} total listings)
+                </span>
+                {isFetching && (
+                  <span className="text-[10px] text-[#FFB020] font-sans">
+                    Updating...
+                  </span>
+                )}
               </div>
 
               <div className="flex items-center gap-1.5">
@@ -211,7 +290,9 @@ export const Directory: React.FC = () => {
                   type="button"
                   disabled={data.page <= 1}
                   onClick={() => handlePageChange(data.page - 1)}
-                  className="px-3 py-1.5 rounded text-xs font-medium border border-[#26262E] bg-[#15151A] text-zinc-300 disabled:opacity-40 disabled:cursor-not-allowed hover:border-[#FFB020]/40"
+                  onMouseEnter={() => handlePrefetchPage(data.page - 1)}
+                  onFocus={() => handlePrefetchPage(data.page - 1)}
+                  className="px-3 py-1.5 rounded text-xs font-medium border border-[#26262E] bg-[#15151A] text-zinc-300 disabled:opacity-40 disabled:cursor-not-allowed hover:border-[#FFB020]/40 transition-colors"
                 >
                   Previous
                 </button>
@@ -228,7 +309,9 @@ export const Directory: React.FC = () => {
                       key={pNum}
                       type="button"
                       onClick={() => handlePageChange(pNum)}
-                      className={`w-8 h-8 rounded text-xs font-mono font-medium border ${
+                      onMouseEnter={() => handlePrefetchPage(pNum)}
+                      onFocus={() => handlePrefetchPage(pNum)}
+                      className={`w-8 h-8 rounded text-xs font-mono font-medium border transition-colors ${
                         data.page === pNum
                           ? 'border-[#FFB020] bg-[#FFB020] text-zinc-950 font-bold'
                           : 'border-[#26262E] bg-[#15151A] text-zinc-300 hover:border-[#FFB020]/40'
@@ -243,7 +326,9 @@ export const Directory: React.FC = () => {
                   type="button"
                   disabled={data.page >= data.totalPages}
                   onClick={() => handlePageChange(data.page + 1)}
-                  className="px-3 py-1.5 rounded text-xs font-medium border border-[#26262E] bg-[#15151A] text-zinc-300 disabled:opacity-40 disabled:cursor-not-allowed hover:border-[#FFB020]/40"
+                  onMouseEnter={() => handlePrefetchPage(data.page + 1)}
+                  onFocus={() => handlePrefetchPage(data.page + 1)}
+                  className="px-3 py-1.5 rounded text-xs font-medium border border-[#26262E] bg-[#15151A] text-zinc-300 disabled:opacity-40 disabled:cursor-not-allowed hover:border-[#FFB020]/40 transition-colors"
                 >
                   Next
                 </button>
@@ -252,7 +337,7 @@ export const Directory: React.FC = () => {
           )}
         </div>
       ) : (
-        /* Empty State naming the filter that produced zero results (Section 7) */
+        /* Empty State */
         <div className="p-12 text-center rounded-md border border-[#26262E] bg-[#111114] space-y-4">
           <div className="text-zinc-300 font-semibold text-base">
             No listings matched your criteria

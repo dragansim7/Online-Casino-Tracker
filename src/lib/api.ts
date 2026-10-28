@@ -47,7 +47,7 @@ export interface DirectoryResponse {
   availableSorts: { key: SortKey; label: string; isDisabled: boolean }[];
 }
 
-export async function fetchListings(params: {
+export interface FetchListingsParams {
   q?: string;
   cat?: BonusCategorySlug[];
   ver?: string;
@@ -55,19 +55,72 @@ export async function fetchListings(params: {
   sort?: SortKey;
   page?: number;
   limit?: number;
-}): Promise<DirectoryResponse> {
+  signal?: AbortSignal;
+  skipCache?: boolean;
+}
+
+// In-memory cache for ultra-fast tab & pagination switching
+interface CacheEntry {
+  data: DirectoryResponse;
+  timestamp: number;
+}
+const listingsCache = new Map<string, CacheEntry>();
+const CACHE_TTL_MS = 60 * 1000; // 60s cache TTL
+
+function serializeParams(params: FetchListingsParams): string {
   const query = new URLSearchParams();
-  if (params.q) query.set('q', params.q);
-  if (params.cat && params.cat.length > 0) query.set('cat', params.cat.join(','));
+  if (params.q) query.set('q', params.q.trim().toLowerCase());
+  if (params.cat && params.cat.length > 0) query.set('cat', [...params.cat].sort().join(','));
   if (params.ver && params.ver !== 'all') query.set('ver', params.ver);
   if (params.avail && params.avail !== 'all') query.set('avail', params.avail);
   if (params.sort) query.set('sort', params.sort);
   if (params.page) query.set('page', params.page.toString());
   if (params.limit) query.set('limit', params.limit.toString());
+  return query.toString();
+}
 
-  const res = await fetch(`/api/listings?${query.toString()}`);
+export function getCachedListings(params: FetchListingsParams): DirectoryResponse | null {
+  const key = serializeParams(params);
+  const entry = listingsCache.get(key);
+  if (entry && Date.now() - entry.timestamp < CACHE_TTL_MS) {
+    return entry.data;
+  }
+  return null;
+}
+
+export async function fetchListings(params: FetchListingsParams): Promise<DirectoryResponse> {
+  const cacheKey = serializeParams(params);
+
+  if (!params.skipCache) {
+    const cached = listingsCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return cached.data;
+    }
+  }
+
+  const res = await fetch(`/api/listings?${cacheKey}`, {
+    signal: params.signal,
+  });
   if (!res.ok) throw new Error('Failed to fetch directory listings');
-  return res.json();
+  const data: DirectoryResponse = await res.json();
+
+  // Populate cache
+  listingsCache.set(cacheKey, {
+    data,
+    timestamp: Date.now(),
+  });
+
+  return data;
+}
+
+export function prefetchListings(params: FetchListingsParams): void {
+  const cacheKey = serializeParams(params);
+  const cached = listingsCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return; // Already cached
+  }
+  // Background pre-fetch without blocking caller
+  fetchListings(params).catch(() => {});
 }
 
 export async function fetchListingDetail(id: string) {

@@ -12,6 +12,7 @@ import { db } from './src/server/db.ts';
 import { syncEngine } from './src/server/syncEngine.ts';
 import { sortListings, resolveSortOptionsList } from './src/lib/sortResolver.ts';
 import { Bonus, BonusCategorySlug, SortKey, User } from './src/types/index.ts';
+import { firestoreRepo } from './src/server/firestoreRepository.ts';
 
 dotenv.config();
 
@@ -54,14 +55,35 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
-// Live Counts for Header and Home (Section 7)
-app.get('/api/counts', (_req, res) => {
+// Live Counts for Header and Home with ETag caching (Section 7)
+app.get('/api/counts', (req, res) => {
+  const v = db.getStateVersion();
+  const etag = `W/"axhub-counts-v${v}"`;
+  res.setHeader('ETag', etag);
+  res.setHeader('Cache-Control', 'public, max-age=5, stale-while-revalidate=20');
+
+  if (req.headers['if-none-match'] === etag) {
+    return res.status(304).end();
+  }
+
   const counts = db.getCounts();
   res.json(counts);
 });
 
 // Listing Directory Query Endpoint with Section 5 Filters & Section 6 Sorting
 app.get('/api/listings', (req, res) => {
+  const v = db.getStateVersion();
+  const queryStr = req.url.includes('?') ? req.url.slice(req.url.indexOf('?') + 1) : '';
+  const queryHash = crypto.createHash('md5').update(queryStr).digest('hex').slice(0, 10);
+  const etag = `W/"axhub-listings-v${v}-${queryHash}"`;
+
+  res.setHeader('ETag', etag);
+  res.setHeader('Cache-Control', 'public, max-age=5, stale-while-revalidate=20');
+
+  if (req.headers['if-none-match'] === etag) {
+    return res.status(304).end();
+  }
+
   const q = (req.query.q as string || '').trim().toLowerCase();
   const catParam = req.query.cat as string;
   const ver = (req.query.ver as string || 'all');
@@ -329,6 +351,7 @@ app.get('/api/admin/listings', requireAdmin, (req, res) => {
 app.post('/api/admin/listings', requireAdmin, (req, res) => {
   try {
     const saved = db.saveListing(req.body);
+    firestoreRepo.syncListing(saved).catch(() => {});
     res.json({ success: true, listing: saved });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to save listing' });
@@ -339,6 +362,7 @@ app.post('/api/admin/listings', requireAdmin, (req, res) => {
 app.delete('/api/admin/listings/:id', requireAdmin, (req, res) => {
   const deleted = db.deleteListing(req.params.id);
   if (!deleted) return res.status(404).json({ error: 'Listing not found' });
+  firestoreRepo.deleteListing(req.params.id).catch(() => {});
   res.json({ success: true });
 });
 
@@ -346,6 +370,7 @@ app.delete('/api/admin/listings/:id', requireAdmin, (req, res) => {
 app.post('/api/admin/listings/:id/toggle-featured', requireAdmin, (req, res) => {
   const updated = db.toggleFeatured(req.params.id);
   if (!updated) return res.status(404).json({ error: 'Listing not found' });
+  firestoreRepo.syncListing(updated).catch(() => {});
   res.json({ success: true, listing: updated });
 });
 
@@ -354,6 +379,7 @@ app.post('/api/admin/listings/:id/toggles', requireAdmin, (req, res) => {
   const { hidden_categories, category_overrides } = req.body;
   const updated = db.updateListingToggles(req.params.id, hidden_categories || [], category_overrides || {});
   if (!updated) return res.status(404).json({ error: 'Listing not found' });
+  firestoreRepo.syncListing(updated).catch(() => {});
   res.json({ success: true, listing: updated });
 });
 
@@ -366,6 +392,9 @@ app.post('/api/admin/listings/quick-add', requireAdmin, (req, res) => {
   const result = db.addSingleDomain(domain);
   if (!result.success) {
     return res.status(400).json({ error: result.error });
+  }
+  if (result.listing) {
+    firestoreRepo.syncListing(result.listing).catch(() => {});
   }
   res.json({ success: true, listing: result.listing });
 });
@@ -381,6 +410,9 @@ app.post('/api/admin/listings/bulk-delete', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'No listing IDs specified for deletion.' });
   }
   const result = db.deleteListings(ids);
+  for (const id of ids) {
+    firestoreRepo.deleteListing(id).catch(() => {});
+  }
   res.json({ success: true, deletedCount: result.deletedCount, message: `Successfully deleted ${result.deletedCount} listing(s).` });
 });
 
@@ -394,6 +426,10 @@ app.post('/api/admin/listings/bulk-import', requireAdmin, (req, res) => {
   }
 
   const result = db.importListings(rawText, adminEmail, Boolean(commit));
+  if (commit && result.willImport && result.willImport.length > 0) {
+    const importedListings = db.getListings().slice(0, result.willImport.length);
+    importedListings.forEach((item) => firestoreRepo.syncListing(item).catch(() => {}));
+  }
   res.json(result);
 });
 
@@ -407,6 +443,10 @@ app.post('/api/admin/import', requireAdmin, (req, res) => {
   }
 
   const result = db.importListings(rawText, adminEmail, Boolean(commit));
+  if (commit && result.willImport && result.willImport.length > 0) {
+    const importedListings = db.getListings().slice(0, result.willImport.length);
+    importedListings.forEach((item) => firestoreRepo.syncListing(item).catch(() => {}));
+  }
   res.json(result);
 });
 

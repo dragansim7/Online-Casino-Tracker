@@ -21,6 +21,7 @@ interface FilterSortBarProps {
   onSelectAvailability: (avail: string) => void;
   onSelectSort: (sort: SortKey) => void;
   onClearFilters: () => void;
+  onHoverCategory?: (slug: BonusCategorySlug) => void;
 }
 
 export const FilterSortBar: React.FC<FilterSortBarProps> = ({
@@ -35,6 +36,7 @@ export const FilterSortBar: React.FC<FilterSortBarProps> = ({
   onSelectAvailability,
   onSelectSort,
   onClearFilters,
+  onHoverCategory,
 }) => {
   const hasActiveFilters =
     selectedCategories.length > 0 || verification !== 'all' || availability !== 'all';
@@ -77,6 +79,8 @@ export const FilterSortBar: React.FC<FilterSortBarProps> = ({
                 key={cat.slug}
                 type="button"
                 onClick={() => handleToggleCategory(cat.slug)}
+                onMouseEnter={() => onHoverCategory?.(cat.slug)}
+                onFocus={() => onHoverCategory?.(cat.slug)}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors border ${
                   isSelected
                     ? 'bg-[#FFB020] text-zinc-950 border-[#FFB020] shadow-sm font-semibold'
