@@ -8,6 +8,8 @@ export type BonusCategorySlug =
   | 'signup_deposit_match'
   | 'referral'
   | 'daily'
+  | 'daily_deposit'
+  | 'weekend_deposit'
   | 'birthday';
 
 export interface CategoryInfo {
@@ -60,6 +62,10 @@ export interface Listing {
   search_text: string;
   created_date: string;
   updated_date: string;
+
+  // Matched bonus in current filter/sort scope for card display
+  matched_bonus?: Bonus | null;
+  bonuses?: Bonus[];
 
   // Denormalised metric columns (recomputed by syncBonuses AND saveListing)
   metric_max_bonus_amount: number | null;

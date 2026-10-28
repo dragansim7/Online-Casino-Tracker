@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import crypto from 'crypto';
 import express, { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -10,7 +11,7 @@ import { fileURLToPath } from 'url';
 import { db } from './src/server/db.ts';
 import { syncEngine } from './src/server/syncEngine.ts';
 import { sortListings, resolveSortOptionsList } from './src/lib/sortResolver.ts';
-import { BonusCategorySlug, SortKey, User } from './src/types/index.ts';
+import { Bonus, BonusCategorySlug, SortKey, User } from './src/types/index.ts';
 
 dotenv.config();
 
@@ -23,18 +24,24 @@ const isProduction = process.env.NODE_ENV === 'production';
 
 app.use(express.json());
 
+// In-memory cryptographically random active admin session tokens
+const activeAdminSessions = new Set<string>();
+
+// Precomputed SHA-256 hash for secure constant-time verification
+const ADMIN_PASSWORD_HASH = crypto.createHash('sha256').update('admin123').digest('hex');
+
 // Simple Auth Middleware for server-side re-validation on every admin mutation (Section 10)
 function requireAdmin(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
-  const roleHeader = req.headers['x-user-role'];
+  const token = authHeader?.replace(/^Bearer\s+/i, '').trim();
 
-  // Check role header or bearer token
-  if (roleHeader === 'admin' || (authHeader && authHeader.includes('admin'))) {
+  // Validate active session token or master token
+  if (token && (activeAdminSessions.has(token) || token === 'axhub_admin_secret_token')) {
     return next();
   }
 
   return res.status(403).json({
-    error: 'Access denied. Every administrator action is also checked on the server, so the directory cannot be changed from the public site.',
+    error: 'Access denied. Valid administrator credentials required.',
   });
 }
 
@@ -104,7 +111,40 @@ app.get('/api/listings', (req, res) => {
   const total = sorted.length;
   const totalPages = Math.ceil(total / limit) || 1;
   const startIndex = (page - 1) * limit;
-  const items = sorted.slice(startIndex, startIndex + limit);
+  const rawItems = sorted.slice(startIndex, startIndex + limit);
+
+  // Helper to determine the best matching bonus for each listing given the active category and sort
+  const items = rawItems.map((l) => {
+    const listingBonuses = db.getBonusesForListing(l.id);
+    let candidates = selectedCategories.length > 0
+      ? listingBonuses.filter((b) => selectedCategories.includes(b.category))
+      : listingBonuses;
+
+    if (candidates.length === 0 && listingBonuses.length > 0) {
+      candidates = listingBonuses;
+    }
+
+    if (candidates.length > 1) {
+      candidates = [...candidates].sort((a, b) => {
+        if (sort === 'biggest_bonus') return (b.amount_value ?? -1) - (a.amount_value ?? -1);
+        if (sort === 'highest_max_withdraw') return (b.max_withdraw ?? -1) - (a.max_withdraw ?? -1);
+        if (sort === 'lowest_cashout') return (a.min_unlock ?? 999999) - (b.min_unlock ?? 999999);
+        if (sort === 'lowest_turnover') return (a.rollover ?? 999) - (b.rollover ?? 999);
+        if (sort === 'best_turnover') {
+          const valA = (a.amount_value || 0) / (a.rollover || 1);
+          const valB = (b.amount_value || 0) / (b.rollover || 1);
+          return valB - valA;
+        }
+        return 0;
+      });
+    }
+
+    return {
+      ...l,
+      matched_bonus: candidates[0] || null,
+      bonuses: listingBonuses,
+    };
+  });
 
   res.json({
     items,
@@ -146,71 +186,72 @@ app.get('/api/favourites', (req, res) => {
   }
   const ids = idsParam.split(',').filter(Boolean);
   const all = db.getListings();
-  const items = all.filter((l) => ids.includes(l.id));
+  const rawItems = all.filter((l) => ids.includes(l.id));
+  const items = rawItems.map((l) => {
+    const listingBonuses = db.getBonusesForListing(l.id);
+    return {
+      ...l,
+      matched_bonus: listingBonuses[0] || null,
+      bonuses: listingBonuses,
+    };
+  });
   res.json({ items });
 });
 
-// Auth endpoints
+// Secure Auth endpoints (Strict credentials: Dragansim7@gmail.com / admin123)
 app.post('/api/auth/login', (req, res) => {
   const { email, password } = req.body;
   const normalizedEmail = (email || '').trim().toLowerCase();
-  const isAdminEmail =
-    normalizedEmail === 'admin@axhub.com' ||
-    normalizedEmail === 'dragansim7@gmail.com';
+  const providedPassword = (password || '').trim();
 
-  if (isAdminEmail) {
-    return res.json({
-      user: {
-        id: 'usr_admin',
-        email: email,
-        name: normalizedEmail === 'dragansim7@gmail.com' ? 'Dragan (Admin)' : 'AXHub Administrator',
-        role: 'admin',
-      },
-      token: 'axhub_admin_secret_token',
-    });
+  const isAdminEmail =
+    normalizedEmail === 'dragansim7@gmail.com' ||
+    normalizedEmail === 'admin@axhub.com';
+
+  if (!isAdminEmail) {
+    return res.status(401).json({ error: 'Invalid email or password' });
   }
 
-  // Regular user
-  return res.json({
-    user: {
-      id: 'usr_player',
-      email: email || 'player@example.com',
-      name: email ? email.split('@')[0] : 'Casual Player',
-      role: 'user',
-    },
-    token: 'axhub_user_token',
-  });
-});
+  // Constant-time SHA-256 hash comparison
+  const inputHash = crypto.createHash('sha256').update(providedPassword).digest('hex');
+  const bufA = Buffer.from(inputHash, 'utf8');
+  const bufB = Buffer.from(ADMIN_PASSWORD_HASH, 'utf8');
 
-app.post('/api/auth/register', (req, res) => {
-  const { email, name } = req.body;
+  const isPasswordValid = bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+
+  if (!isPasswordValid) {
+    return res.status(401).json({ error: 'Invalid email or password' });
+  }
+
+  // Cryptographically random session token
+  const sessionToken = `axhub_adm_${crypto.randomBytes(32).toString('hex')}`;
+  activeAdminSessions.add(sessionToken);
+
   return res.json({
     user: {
-      id: `usr_${Date.now()}`,
-      email: email || 'new@axhub.local',
-      name: name || 'AXHub Member',
-      role: 'user',
+      id: 'usr_admin',
+      email: 'Dragansim7@gmail.com',
+      name: 'Dragan (Admin)',
+      role: 'admin',
     },
-    token: 'axhub_user_token',
+    token: sessionToken,
   });
 });
 
 app.get('/api/auth/me', (req, res) => {
   const auth = req.headers.authorization;
-  if (auth && auth.includes('admin')) {
+  const token = auth?.replace(/^Bearer\s+/i, '').trim();
+
+  if (token && (activeAdminSessions.has(token) || token === 'axhub_admin_secret_token')) {
     return res.json({
       id: 'usr_admin',
-      email: 'admin@axhub.com',
-      name: 'AXHub Administrator',
+      email: 'Dragansim7@gmail.com',
+      name: 'Dragan (Admin)',
       role: 'admin',
     });
   }
-  return res.json({
-    id: 'usr_player',
-    email: 'player@example.com',
-    name: 'Casual Player',
-    role: 'user',
-  });
+
+  return res.status(401).json({ error: 'Not authenticated' });
 });
 
 // =====================================================================
@@ -316,7 +357,47 @@ app.post('/api/admin/listings/:id/toggles', requireAdmin, (req, res) => {
   res.json({ success: true, listing: updated });
 });
 
+// Admin Quick Add Single Domain
+app.post('/api/admin/listings/quick-add', requireAdmin, (req, res) => {
+  const { domain } = req.body;
+  if (!domain) {
+    return res.status(400).json({ error: 'Domain is required' });
+  }
+  const result = db.addSingleDomain(domain);
+  if (!result.success) {
+    return res.status(400).json({ error: result.error });
+  }
+  res.json({ success: true, listing: result.listing });
+});
+
+// Admin Bulk Delete Domains (by selected IDs or entire directory)
+app.post('/api/admin/listings/bulk-delete', requireAdmin, (req, res) => {
+  const { ids, all } = req.body;
+  if (all === true) {
+    const result = db.deleteAllListings();
+    return res.json({ success: true, deletedCount: result.deletedCount, message: `All ${result.deletedCount} listings deleted.` });
+  }
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'No listing IDs specified for deletion.' });
+  }
+  const result = db.deleteListings(ids);
+  res.json({ success: true, deletedCount: result.deletedCount, message: `Successfully deleted ${result.deletedCount} listing(s).` });
+});
+
 // Admin Bulk Import (Section 10)
+app.post('/api/admin/listings/bulk-import', requireAdmin, (req, res) => {
+  const { rawText, commit } = req.body;
+  const adminEmail = 'admin@axhub.com';
+
+  if (!rawText) {
+    return res.status(400).json({ error: 'No domains provided.' });
+  }
+
+  const result = db.importListings(rawText, adminEmail, Boolean(commit));
+  res.json(result);
+});
+
+// Compatibility route for existing /api/admin/import
 app.post('/api/admin/import', requireAdmin, (req, res) => {
   const { rawText, commit } = req.body;
   const adminEmail = 'admin@axhub.com';
@@ -330,7 +411,7 @@ app.post('/api/admin/import', requireAdmin, (req, res) => {
 });
 
 // =====================================================================
-// REAL-TIME SYNC PROGRESS TRACKER (Requirement 1 & Requirement 3)
+// REAL-TIME SYNC PROGRESS TRACKER & STAGE MONITORING (Requirement 2)
 // =====================================================================
 
 interface SyncProgressState {
@@ -339,13 +420,50 @@ interface SyncProgressState {
   processed: number;
   percent: number;
   currentDomain: string;
+  queueDepth: number;
+  activeWorkers: number;
   successCount: number;
+  cachedCount: number;
   errorCount: number;
   matchedCount: number;
   droppedCount: number;
   startedAt: string | null;
   completedAt: string | null;
-  errors: { domain: string; error: string; time: string }[];
+  stages: {
+    avgTriggerMs: number;
+    avgFetchMs: number;
+    avgExtractMs: number;
+    avgPublishMs: number;
+    lastTriggerMs: number;
+    lastFetchMs: number;
+    lastExtractMs: number;
+    lastPublishMs: number;
+  };
+  responseStats: {
+    ok200: number;
+    cached304: number;
+    rateLimited429: number;
+    serverError5xx: number;
+    timeout: number;
+    permanentFail: number;
+  };
+  retryStats: {
+    attempted: number;
+    recovered: number;
+    exhausted: number;
+  };
+  freshness: {
+    freshWithin1Hour: number;
+    freshWithin24Hours: number;
+    staleOrUnchecked: number;
+  };
+  errors: {
+    domain: string;
+    error: string;
+    isTemporary: boolean;
+    retried: number;
+    time: string;
+  }[];
 }
 
 let syncProgress: SyncProgressState = {
@@ -354,19 +472,69 @@ let syncProgress: SyncProgressState = {
   processed: 0,
   percent: 0,
   currentDomain: '',
+  queueDepth: 0,
+  activeWorkers: 0,
   successCount: 0,
+  cachedCount: 0,
   errorCount: 0,
   matchedCount: 0,
   droppedCount: 0,
   startedAt: null,
   completedAt: null,
+  stages: {
+    avgTriggerMs: 0,
+    avgFetchMs: 0,
+    avgExtractMs: 0,
+    avgPublishMs: 0,
+    lastTriggerMs: 0,
+    lastFetchMs: 0,
+    lastExtractMs: 0,
+    lastPublishMs: 0,
+  },
+  responseStats: {
+    ok200: 0,
+    cached304: 0,
+    rateLimited429: 0,
+    serverError5xx: 0,
+    timeout: 0,
+    permanentFail: 0,
+  },
+  retryStats: {
+    attempted: 0,
+    recovered: 0,
+    exhausted: 0,
+  },
+  freshness: {
+    freshWithin1Hour: 0,
+    freshWithin24Hours: 0,
+    staleOrUnchecked: 0,
+  },
   errors: [],
 };
 
 let cancelRequested = false;
 
-// GET real-time scraper progress
+function computeFreshnessStats() {
+  const all = db.getListings();
+  const oneHourAgo = Date.now() - 3600000;
+  const oneDayAgo = Date.now() - 86400000;
+  let f1h = 0;
+  let f24h = 0;
+  let stale = 0;
+  for (const l of all) {
+    const t = l.bonus_checked_at ? new Date(l.bonus_checked_at).getTime() : 0;
+    if (t >= oneHourAgo) f1h++;
+    else if (t >= oneDayAgo) f24h++;
+    else stale++;
+  }
+  return { freshWithin1Hour: f1h, freshWithin24Hours: f24h, staleOrUnchecked: stale };
+}
+
+// GET real-time scraper progress with stage breakdown
 app.get('/api/admin/bonuses/sync-progress', requireAdmin, (_req, res) => {
+  if (!syncProgress.isRunning) {
+    syncProgress.freshness = computeFreshnessStats();
+  }
   res.json(syncProgress);
 });
 
@@ -374,10 +542,11 @@ app.get('/api/admin/bonuses/sync-progress', requireAdmin, (_req, res) => {
 app.post('/api/admin/bonuses/sync-cancel', requireAdmin, (_req, res) => {
   cancelRequested = true;
   syncProgress.isRunning = false;
+  syncProgress.activeWorkers = 0;
   res.json({ success: true, message: 'Sync cancellation requested' });
 });
 
-// POST Start Fetch All Domains with live progress
+// POST Start Fetch All Domains with controlled concurrency, backoff, and stage measurement
 app.post('/api/admin/bonuses/sync-all', requireAdmin, async (_req, res) => {
   if (syncProgress.isRunning) {
     return res.json({ success: false, message: 'Sync already in progress', progress: syncProgress });
@@ -392,61 +561,160 @@ app.post('/api/admin/bonuses/sync-all', requireAdmin, async (_req, res) => {
     processed: 0,
     percent: 0,
     currentDomain: allListings[0]?.normalised_domain || '',
+    queueDepth: allListings.length,
+    activeWorkers: 0,
     successCount: 0,
+    cachedCount: 0,
     errorCount: 0,
     matchedCount: 0,
     droppedCount: 0,
     startedAt: new Date().toISOString(),
     completedAt: null,
+    stages: {
+      avgTriggerMs: 0,
+      avgFetchMs: 0,
+      avgExtractMs: 0,
+      avgPublishMs: 0,
+      lastTriggerMs: 0,
+      lastFetchMs: 0,
+      lastExtractMs: 0,
+      lastPublishMs: 0,
+    },
+    responseStats: {
+      ok200: 0,
+      cached304: 0,
+      rateLimited429: 0,
+      serverError5xx: 0,
+      timeout: 0,
+      permanentFail: 0,
+    },
+    retryStats: {
+      attempted: 0,
+      recovered: 0,
+      exhausted: 0,
+    },
+    freshness: computeFreshnessStats(),
     errors: [],
   };
 
-  // Return response immediately so client can poll progress
+  // Return response immediately so client can stream progress
   res.json({ success: true, message: `Started fetching all ${allListings.length} domains`, progress: syncProgress });
 
-  // Run processing in asynchronous non-blocking background batches
+  // Controlled concurrency worker pool (concurrency = 6)
   (async () => {
-    const chunkSize = 25;
-    for (let i = 0; i < allListings.length; i += chunkSize) {
-      if (cancelRequested) break;
+    const concurrency = 6;
+    const queue = [...allListings];
+    let processedCount = 0;
+    let activeCount = 0;
 
-      const chunk = allListings.slice(i, i + chunkSize);
-      await Promise.all(
-        chunk.map(async (listing) => {
-          if (cancelRequested) return;
-          syncProgress.currentDomain = listing.normalised_domain;
-          try {
-            const updated = await syncEngine.syncListing(listing);
-            if (updated.bonus_status === 'failed' || updated.feed_status === 'error') {
-              syncProgress.errorCount += 1;
-              syncProgress.errors.push({
-                domain: listing.normalised_domain,
-                error: 'Feed connection or parsing failure',
-                time: new Date().toLocaleTimeString(),
-              });
+    async function worker() {
+      while (queue.length > 0 && !cancelRequested) {
+        const listing = queue.shift();
+        if (!listing) break;
+
+        activeCount++;
+        syncProgress.activeWorkers = activeCount;
+        syncProgress.queueDepth = queue.length;
+        syncProgress.currentDomain = listing.normalised_domain;
+
+        try {
+          const res = await syncEngine.syncListingWithMetrics(listing);
+          const s = res.stages;
+
+          syncProgress.stages.lastTriggerMs = s.triggerMs;
+          syncProgress.stages.lastFetchMs = s.fetchMs;
+          syncProgress.stages.lastExtractMs = s.extractMs;
+          syncProgress.stages.lastPublishMs = s.publishMs;
+
+          // Compute progressive rolling averages
+          const n = processedCount + 1;
+          syncProgress.stages.avgTriggerMs = Math.round(
+            (syncProgress.stages.avgTriggerMs * processedCount + s.triggerMs) / n
+          );
+          syncProgress.stages.avgFetchMs = Math.round(
+            (syncProgress.stages.avgFetchMs * processedCount + s.fetchMs) / n
+          );
+          syncProgress.stages.avgExtractMs = Math.round(
+            (syncProgress.stages.avgExtractMs * processedCount + s.extractMs) / n
+          );
+          syncProgress.stages.avgPublishMs = Math.round(
+            (syncProgress.stages.avgPublishMs * processedCount + s.publishMs) / n
+          );
+
+          // Retry counters
+          if (res.retries > 0) {
+            syncProgress.retryStats.attempted += res.retries;
+            if (res.statusCode === 200 || res.statusCode === 304) {
+              syncProgress.retryStats.recovered += 1;
             } else {
-              syncProgress.successCount += 1;
-              syncProgress.matchedCount += (updated.bonus_count || 0);
+              syncProgress.retryStats.exhausted += 1;
             }
-          } catch (err: any) {
+          }
+
+          // Response distribution
+          if (res.isCached || res.statusCode === 304) {
+            syncProgress.cachedCount += 1;
+            syncProgress.responseStats.cached304 += 1;
+            syncProgress.successCount += 1;
+          } else if (res.statusCode === 200) {
+            syncProgress.responseStats.ok200 += 1;
+            syncProgress.successCount += 1;
+          } else if (res.statusCode === 429) {
+            syncProgress.responseStats.rateLimited429 += 1;
+          } else if (res.statusCode >= 500) {
+            syncProgress.responseStats.serverError5xx += 1;
+          } else if (res.statusCode === 404 || res.statusCode === 403 || res.statusCode === 400) {
+            syncProgress.responseStats.permanentFail += 1;
+          }
+
+          if (res.listing.bonus_status === 'failed' || res.listing.feed_status === 'error') {
             syncProgress.errorCount += 1;
             syncProgress.errors.push({
               domain: listing.normalised_domain,
-              error: err.message || 'Unknown crawl error',
+              error: res.errorMessage || 'Feed connection failure',
+              isTemporary: res.isTemporaryError,
+              retried: res.retries,
               time: new Date().toLocaleTimeString(),
             });
+          } else {
+            syncProgress.matchedCount += res.listing.bonus_count || 0;
           }
-          syncProgress.processed += 1;
-          syncProgress.percent = Math.round((syncProgress.processed / syncProgress.total) * 100);
-        })
-      );
+        } catch (err: any) {
+          syncProgress.errorCount += 1;
+          syncProgress.errors.push({
+            domain: listing.normalised_domain,
+            error: err.message || 'Scrape exception',
+            isTemporary: false,
+            retried: 0,
+            time: new Date().toLocaleTimeString(),
+          });
+        } finally {
+          activeCount--;
+          processedCount++;
+          syncProgress.processed = processedCount;
+          syncProgress.queueDepth = queue.length;
+          syncProgress.activeWorkers = activeCount;
+          syncProgress.percent = Math.round((processedCount / syncProgress.total) * 100);
+        }
 
-      // Small yield to event loop for server responsiveness
-      await new Promise((resolve) => setTimeout(resolve, 30));
+        // Polite delay between requests to preserve host resources
+        if (!cancelRequested) {
+          await new Promise((resolve) => setTimeout(resolve, 35));
+        }
+      }
     }
 
+    const workerPromises = Array.from(
+      { length: Math.min(concurrency, allListings.length) },
+      () => worker()
+    );
+    await Promise.all(workerPromises);
+
     syncProgress.isRunning = false;
+    syncProgress.activeWorkers = 0;
+    syncProgress.queueDepth = 0;
     syncProgress.completedAt = new Date().toISOString();
+    syncProgress.freshness = computeFreshnessStats();
     syncProgress.percent = Math.round((syncProgress.processed / syncProgress.total) * 100);
   })();
 });

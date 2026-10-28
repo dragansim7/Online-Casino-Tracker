@@ -55,19 +55,10 @@ export function useAuth() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password: pass }),
     });
-    if (!res.ok) throw new Error('Failed to login');
-    const data = await res.json();
-    setStoredAuth(data.user, data.token);
-    return data.user;
-  };
-
-  const register = async (email: string, name: string) => {
-    const res = await fetch('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, name }),
-    });
-    if (!res.ok) throw new Error('Failed to register');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Invalid email or password');
+    }
     const data = await res.json();
     setStoredAuth(data.user, data.token);
     return data.user;
@@ -82,7 +73,6 @@ export function useAuth() {
     token,
     isAdmin: user?.role === 'admin',
     login,
-    register,
     logout,
   };
 }

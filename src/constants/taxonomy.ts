@@ -24,15 +24,27 @@ export const BONUS_CATEGORIES: CategoryInfo[] = [
   },
   {
     slug: 'referral',
-    heading: 'Referral share/invite/deposit bonus',
+    heading: 'Share / Referral deposit bonus',
     chipLabel: 'Referral',
-    subline: "Paid for inviting, sharing, or a downline's deposit.",
+    subline: 'Cash or percentage on downline deposits or friend registration.',
   },
   {
     slug: 'daily',
     heading: 'Daily free bonus',
     chipLabel: 'Daily free',
-    subline: 'Free credit or a repeatable offer claimed each day.',
+    subline: 'Free credit or repeatable offer claimed each day without depositing.',
+  },
+  {
+    slug: 'daily_deposit',
+    heading: 'Daily deposit bonus',
+    chipLabel: 'Daily Deposit Bonus',
+    subline: 'Repeatable reload boost credited on daily recurring deposits.',
+  },
+  {
+    slug: 'weekend_deposit',
+    heading: 'Weekend deposit bonus',
+    chipLabel: 'Weekend Deposit Bonus',
+    subline: 'Exclusive deposit match boost available Friday through Sunday.',
   },
   {
     slug: 'birthday',
@@ -53,8 +65,10 @@ export const CATEGORY_DEFAULT_SORT: Record<BonusCategorySlug, SortKey> = {
   signup_no_deposit: 'biggest_bonus',
   signup_deposit_match: 'biggest_bonus',
   referral: 'highest_max_withdraw',
-  birthday: 'highest_max_withdraw',
   daily: 'lowest_turnover',
+  daily_deposit: 'biggest_bonus',
+  weekend_deposit: 'biggest_bonus',
+  birthday: 'highest_max_withdraw',
 };
 
 /**
@@ -190,50 +204,60 @@ export function classifyPromo(
     return { category: 'birthday' };
   }
 
-  // 2. Referral
-  if (/refer|friend|invite|downline|share with friends|affiliate commission share/i.test(text)) {
+  // 2. Weekend Deposit Bonus
+  if (/weekend boost|weekend deposit|weekend match|weekend reload|saturday boost|sunday boost|friday to sunday|weekend offer/i.test(text)) {
+    return { category: 'weekend_deposit' };
+  }
+
+  // 3. Referral / Share Deposit Bonus
+  if (/refer|friend|invite|downline|share with friends|share referral|commission share|affiliate commission/i.test(text)) {
     return { category: 'referral' };
   }
 
-  // 3. Signup No Deposit
+  // 4. Signup No Deposit
   const isNoDeposit =
-    /no deposit|free sign|registration bonus|on register|sign up free|welcome free chips?|welcome free spins?/i.test(
+    /no deposit|free sign|registration bonus|on register|sign up free|welcome free chips?|welcome free spins?|free credit \d+|register free/i.test(
       text
-    ) && !/deposit match|first deposit match/i.test(text);
+    ) && !/deposit match|first deposit match|min deposit|minimum deposit/i.test(text);
 
   if (isNoDeposit) {
     return { category: 'signup_no_deposit' };
   }
 
-  // 4. Percentage Match on Deposit
+  // 5. Daily Deposit Bonus (Recurring reload or match on deposits)
+  const isDailyRecurring = /daily welcome|daily deposit|daily reload|11pm boost|late night boost|everyday deposit|daily match|daily boost|unlimited extra/i.test(text);
+  if (isDailyRecurring) {
+    return { category: 'daily_deposit' };
+  }
+
+  // 6. Percentage Match on Deposit (First deposit / Welcome match)
   const hasPercentageMatch = /%|\bmatch\b|\bdeposit bonus\b/i.test(text);
-  const isFirstDeposit = /first deposit|welcome package|1st deposit|initial deposit|new member deposit/i.test(text);
-  const isRecurring = /daily|weekly|monthly|every day|every week|reload|re-deposit/i.test(text);
+  const isFirstDeposit = /first deposit|welcome package|1st deposit|initial deposit|new member deposit|welcome bonus/i.test(text);
+  const isGeneralRecurring = /daily|weekly|monthly|every day|every week|reload|re-deposit/i.test(text);
 
   if (hasPercentageMatch) {
-    if (isFirstDeposit && !isRecurring) {
+    if (isFirstDeposit && !isGeneralRecurring) {
       return { category: 'signup_deposit_match' };
     }
-    if (isRecurring) {
-      return { category: 'daily' };
+    if (isGeneralRecurring) {
+      return { category: 'daily_deposit' };
     }
-    // Default welcome deposit match if framing is welcome/first
     if (/welcome/i.test(text)) {
       return { category: 'signup_deposit_match' };
     }
   }
 
-  // 5. Flat free credit or free spins, repeating cadence -> daily
-  if (/daily login|check-in|everyday bonus|daily gift|daily free|spin the wheel|daily roll/i.test(text)) {
+  // 7. Flat free credit or free spins, repeating cadence (no deposit required) -> daily
+  if (/daily login|check-in|everyday bonus|daily gift|daily free|spin the wheel|daily roll|social free|page verify/i.test(text)) {
     return { category: 'daily' };
   }
 
-  // 6. Flat free credit unlocked by deposit threshold, repeating -> daily
-  if (isRecurring && /deposit/i.test(text)) {
-    return { category: 'daily' };
+  // 8. Flat free credit unlocked by deposit threshold -> daily_deposit
+  if (isGeneralRecurring && /deposit/i.test(text)) {
+    return { category: 'daily_deposit' };
   }
 
-  // 7. Nothing matched -> DROP
+  // 9. Nothing matched -> DROP
   return {
     category: null,
     dropReason: 'Did not meet strict taxonomy criteria (Section 4a)',

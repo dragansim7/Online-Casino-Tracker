@@ -483,7 +483,7 @@ class Database {
         id: 'bon_yeah96_444986',
         listing_id: yeah96Id,
         name: 'DAILY WELCOME (50% Reload)',
-        category: 'daily',
+        category: 'daily_deposit',
         amount_label: '50% up to AUD 300',
         amount_value: 300,
         rollover: 10,
@@ -502,10 +502,32 @@ class Database {
         is_new: false,
       },
       {
+        id: 'bon_yeah96_444987',
+        listing_id: yeah96Id,
+        name: 'WEEKEND BOOST (50% Weekend Match)',
+        category: 'weekend_deposit',
+        amount_label: '50% up to AUD 200',
+        amount_value: 200,
+        rollover: 5,
+        min_unlock: 5,
+        max_withdraw: 2000,
+        min_deposit: 50,
+        reset_period: 'WEEKLY',
+        claim_condition: 'DEPOSIT',
+        providers_allowed: 'Slot games only',
+        providers_excluded: 'Table Games, Live Casino',
+        game_types: 'Pokies',
+        terms_text:
+          'Weekend Boost ✦ Yeah96 • 50% up to $200 ✦ Valid Friday to Sunday ✦ Minimum deposit $50 ✦ Rollover 5x',
+        first_seen: new Date('2026-02-01T00:00:00Z').toISOString(),
+        last_seen_at: new Date().toISOString(),
+        is_new: false,
+      },
+      {
         id: 'bon_yeah96_812841',
         listing_id: yeah96Id,
         name: '11PM Late Night Boost',
-        category: 'daily',
+        category: 'daily_deposit',
         amount_label: '50% up to AUD 700',
         amount_value: 700,
         rollover: 5,
@@ -539,6 +561,8 @@ class Database {
       this.state.engagements[yeah96Id]
     );
     listings.push(updatedYeah96);
+
+
 
     // Seed Deliberately-Droppable Promos into PromoUnmatched to prove the drop list works (Section 14 & Section 4b)
     unmatched.push(
@@ -825,7 +849,7 @@ class Database {
           claim_condition: b.category === 'signup_deposit_match' ? 'DEPOSIT' : 'FREE',
           providers_allowed: 'Pokies',
           providers_excluded: null,
-          game_types: 'Slots',
+          game_types: 'Pokies',
           terms_text: b.terms,
           first_seen: new Date('2026-03-01T00:00:00Z').toISOString(),
           last_seen_at: new Date().toISOString(),
@@ -1204,7 +1228,105 @@ class Database {
     this.state.listings.splice(idx, 1);
     this.state.bonuses = this.state.bonuses.filter((b) => b.listing_id !== id);
     this.state.unmatched = this.state.unmatched.filter((u) => u.listing_id !== id);
+    delete this.state.engagements[id];
     return true;
+  }
+
+  public deleteListings(ids: string[]): { deletedCount: number } {
+    const idSet = new Set(ids);
+    const initialCount = this.state.listings.length;
+    this.state.listings = this.state.listings.filter((l) => !idSet.has(l.id));
+    this.state.bonuses = this.state.bonuses.filter((b) => !idSet.has(b.listing_id));
+    this.state.unmatched = this.state.unmatched.filter((u) => !idSet.has(u.listing_id));
+    for (const id of ids) {
+      delete this.state.engagements[id];
+    }
+    const deletedCount = initialCount - this.state.listings.length;
+    return { deletedCount };
+  }
+
+  public deleteAllListings(): { deletedCount: number } {
+    const deletedCount = this.state.listings.length;
+    this.state.listings = [];
+    this.state.bonuses = [];
+    this.state.unmatched = [];
+    this.state.engagements = {};
+    return { deletedCount };
+  }
+
+  public addSingleDomain(domainInput: string, adminEmail: string = 'admin@axhub.com'): {
+    success: boolean;
+    listing?: Listing;
+    error?: string;
+  } {
+    const raw = (domainInput || '').trim();
+    if (!raw) {
+      return { success: false, error: 'Please enter a valid domain name.' };
+    }
+
+    const normalised = normaliseDomain(raw);
+    if (!normalised || !normalised.includes('.')) {
+      return { success: false, error: `Invalid domain format: "${raw}". Example: casino.com` };
+    }
+
+    const exists = this.state.listings.some((l) => l.normalised_domain === normalised);
+    if (exists) {
+      return { success: false, error: `Domain "${normalised}" already exists in directory listings.` };
+    }
+
+    const now = new Date().toISOString();
+    const id = `lst_sgl_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const nameParts = normalised.split('.')[0];
+    const formattedName = nameParts.charAt(0).toUpperCase() + nameParts.slice(1);
+
+    const newListing: Listing = {
+      id,
+      name: formattedName,
+      domain: normalised,
+      normalised_domain: normalised,
+      destination_url: `https://${normalised}/?ref=axhub&aff=direct`,
+      description: `Directory listing for ${formattedName} (${normalised}).`,
+      admin_notes: `Added individually by ${adminEmail} on ${now.slice(0, 10)}.`,
+      is_featured: false,
+      is_demo: false,
+      source: 'manual',
+      technical_status: 'online',
+      verification_status: 'verified',
+      last_checked_at: now,
+      bonus_status: 'unchecked',
+      bonus_checked_at: null,
+      bonus_count: 0,
+      bonus_summary: '',
+      feed_url: `https://${normalised}/promotion`,
+      feed_status: 'unknown',
+      feed_last_checked_at: null,
+      hidden_categories: [],
+      category_overrides: {},
+      search_text: `${formattedName.toLowerCase()} ${normalised.toLowerCase()}`,
+      created_date: now,
+      updated_date: now,
+      metric_max_bonus_amount: null,
+      metric_max_withdraw: null,
+      metric_min_rollover: null,
+      metric_min_unlock: null,
+      metric_best_value: null,
+      metric_popularity: 0,
+      category_metrics: createEmptyCategoryMetrics(),
+    };
+
+    const engagement: ListingEngagement = {
+      id: `eng_${id}`,
+      listing_id: id,
+      click_count: 0,
+      favourite_count: 0,
+      popularity_score: 0,
+    };
+    this.state.engagements[id] = engagement;
+
+    const recomputed = recomputeListingMetrics(newListing, this.state.bonuses, engagement);
+    this.state.listings.unshift(recomputed);
+
+    return { success: true, listing: recomputed };
   }
 
   public toggleFeatured(id: string): Listing | null {
@@ -1260,7 +1382,7 @@ class Database {
       .map((l) => l.trim())
       .filter((l) => l.length > 0);
 
-    const cap = Math.min(lines.length, 1000);
+    const cap = Math.min(lines.length, 5000);
     const existingDomains = new Set(this.state.listings.map((l) => l.normalised_domain));
 
     const willImport: string[] = [];

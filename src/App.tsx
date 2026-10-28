@@ -13,7 +13,7 @@ import { ListingDetail } from './pages/ListingDetail.tsx';
 import { Favourites } from './pages/Favourites.tsx';
 import { ResponsibleGambling } from './pages/ResponsibleGambling.tsx';
 import { About, Contact, Privacy, Terms } from './pages/StaticPages.tsx';
-import { Login, Register, ForgotPassword, ResetPassword } from './pages/AuthPages.tsx';
+import { Login, ForgotPassword, ResetPassword } from './pages/AuthPages.tsx';
 import { Admin } from './pages/Admin.tsx';
 
 export default function App() {
@@ -59,7 +59,7 @@ export default function App() {
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />
             <Route path="/login" element={<Login />} />
-            <Route path="/register" element={<Register />} />
+            <Route path="/register" element={<Login />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/admin" element={<Admin />} />

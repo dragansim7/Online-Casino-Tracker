@@ -117,6 +117,32 @@ export async function saveAdminListing(listing: Partial<Listing>) {
   return res.json();
 }
 
+export async function quickAddAdminListing(domain: string) {
+  const res = await fetch('/api/admin/listings/quick-add', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ domain }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error || 'Failed to add domain');
+  }
+  return res.json();
+}
+
+export async function bulkDeleteAdminListings(ids?: string[], all?: boolean) {
+  const res = await fetch('/api/admin/listings/bulk-delete', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ ids, all }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error || 'Failed to delete listings');
+  }
+  return res.json();
+}
+
 export async function deleteAdminListing(id: string) {
   const res = await fetch(`/api/admin/listings/${id}`, {
     method: 'DELETE',
@@ -150,7 +176,7 @@ export async function updateAdminToggles(
 }
 
 export async function bulkImportDomains(rawText: string, commit: boolean) {
-  const res = await fetch('/api/admin/import', {
+  const res = await fetch('/api/admin/listings/bulk-import', {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ rawText, commit }),
@@ -181,20 +207,53 @@ export async function fetchAdminAdapters() {
   return res.json();
 }
 
-export async function fetchSyncProgress(): Promise<{
+export interface SyncProgressResponse {
   isRunning: boolean;
   total: number;
   processed: number;
   percent: number;
   currentDomain: string;
+  queueDepth: number;
+  activeWorkers: number;
   successCount: number;
+  cachedCount: number;
   errorCount: number;
   matchedCount: number;
   droppedCount: number;
   startedAt: string | null;
   completedAt: string | null;
-  errors: { domain: string; error: string; time: string }[];
-}> {
+  stages: {
+    avgTriggerMs: number;
+    avgFetchMs: number;
+    avgExtractMs: number;
+    avgPublishMs: number;
+    lastTriggerMs: number;
+    lastFetchMs: number;
+    lastExtractMs: number;
+    lastPublishMs: number;
+  };
+  responseStats: {
+    ok200: number;
+    cached304: number;
+    rateLimited429: number;
+    serverError5xx: number;
+    timeout: number;
+    permanentFail: number;
+  };
+  retryStats: {
+    attempted: number;
+    recovered: number;
+    exhausted: number;
+  };
+  freshness: {
+    freshWithin1Hour: number;
+    freshWithin24Hours: number;
+    staleOrUnchecked: number;
+  };
+  errors: { domain: string; error: string; isTemporary: boolean; retried: number; time: string }[];
+}
+
+export async function fetchSyncProgress(): Promise<SyncProgressResponse> {
   const res = await fetch('/api/admin/bonuses/sync-progress', { headers: getAuthHeaders() });
   if (!res.ok) throw new Error('Failed to fetch sync progress');
   return res.json();
