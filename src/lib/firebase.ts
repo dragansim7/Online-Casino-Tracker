@@ -5,7 +5,6 @@
 
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
 
 export const firebaseConfig = {
   projectId: "gen-lang-client-0981577974",
@@ -22,7 +21,5 @@ export const firebaseConfig = {
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-// Initialize Cloud Firestore pointing to the designated database instance
-export const firestoreDb = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export default app;
